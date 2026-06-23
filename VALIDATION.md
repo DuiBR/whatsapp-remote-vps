@@ -1,14 +1,12 @@
-# Validação da versão 2.2.0
+# Validação
 
-Validações automatizadas realizadas no pacote:
+Versão 2.2.1 validada com:
 
-- `bash -n` em todos os scripts Bash.
-- Verificação de permissões executáveis.
-- Validação das referências internas entre scripts.
-- Validação do JSON obrigatório do noVNC.
-- Validação de todos os arquivos pelo `MANIFEST.sha256`.
-- Testes isolados das funções de validação de IPv4, usuário, domínio, e-mail e resolução.
-- Teste de exibição da ajuda de `setup.sh` e `install.sh`.
-- Teste do menu do bootstrap em ambiente simulado.
+- `bash -n` em todos os scripts principais;
+- verificação da presença dos arquivos essenciais;
+- manifesto SHA-256 limitado aos scripts do projeto;
+- simulação de upload sem `.gitignore` e `.gitattributes`;
+- simulação de checksum divergente com continuidade após validação estrutural;
+- geração e leitura do pacote ZIP.
 
-A instalação completa precisa ser executada em uma VPS real para validar rede, repositórios APT, regras do provedor e comportamento do navegador daquela imagem específica.
+O `MANIFEST.sha256` é complementar. A proteção principal do bootstrap é a origem HTTPS do repositório configurado, combinada com validação de estrutura e sintaxe antes da execução.

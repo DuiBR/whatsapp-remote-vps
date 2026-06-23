@@ -54,3 +54,9 @@ unset WR_GITHUB_TOKEN
 ```
 
 Nunca grave tokens dentro dos scripts ou faça commit de credenciais.
+
+## Observação para upload pelo celular
+
+Os arquivos `.gitignore` e `.gitattributes` podem não aparecer no seletor do navegador por serem ocultos. Eles são opcionais. Não crie esses arquivos manualmente apenas para concluir a instalação.
+
+Envie obrigatoriamente os scripts, a pasta `lib` e o arquivo `MANIFEST.sha256` atualizado.

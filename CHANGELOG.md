@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2.2.1 — Correção da validação no GitHub
+
+- Corrigida a falha de instalação quando `.gitignore` e `.gitattributes` não são enviados pelo navegador do celular.
+- Arquivos ocultos do GitHub deixaram de ser obrigatórios para a instalação.
+- `VERSION` e arquivos de documentação deixaram de bloquear a validação do pacote.
+- A validação obrigatória agora verifica a presença e a sintaxe dos scripts essenciais.
+- O checksum passou a ser uma camada complementar: diferenças geram aviso, mas não interrompem uma instalação estruturalmente válida.
+- Mensagens de diagnóstico mais claras para uploads realizados pelo navegador do GitHub.
+
 ## 2.2.0 — Instalador inteligente e Manager completo
 
 - Adicionado menu principal diretamente no comando de instalação pelo GitHub.

@@ -17,6 +17,13 @@ Instalador universal para manter o WhatsApp Web aberto 24 horas em uma VPS, com 
 - **Memória baixa:** detecta a RAM, cria swap quando necessário e reduz processos do navegador.
 - **Celular:** noVNC configurado para toque, ponteiro visível, escala automática e reconexão.
 
+
+## Upload pelo navegador do GitHub
+
+Ao enviar os arquivos pelo celular, `.gitignore` e `.gitattributes` podem ficar ocultos no seletor. Eles são opcionais e não impedem a instalação. Os arquivos essenciais são `setup.sh`, `install.sh`, `manage.sh`, `repair.sh`, `status.sh`, `uninstall.sh` e `lib/common.sh`.
+
+A partir da versão 2.2.1, diferenças no `MANIFEST.sha256` geram apenas um aviso quando a estrutura e a sintaxe dos scripts estiverem válidas.
+
 ## Instalação pelo menu
 
 Execute como root ou com `sudo`:
