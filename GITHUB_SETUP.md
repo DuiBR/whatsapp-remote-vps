@@ -1,76 +1,56 @@
-# Publicação e instalação pelo GitHub
+# Publicação no GitHub
 
-## 1. Criar o repositório
-
-Crie um repositório público vazio no GitHub, por exemplo:
+Repositório configurado no projeto:
 
 ```text
-whatsapp-remote-vps
+https://github.com/DuiBR/whatsapp-remote-vps
 ```
 
-Não adicione README, .gitignore ou licença durante a criação, pois estes arquivos já estão no projeto.
+## Enviar a versão para o repositório
 
-## 2. Configurar o instalador por link
-
-Edite `setup.sh` e altere:
+Extraia o ZIP e copie o conteúdo para a raiz do repositório:
 
 ```bash
-DEFAULT_REPOSITORY="DuiBR/whatsapp-remote-vps"
+git clone https://github.com/DuiBR/whatsapp-remote-vps.git
+cp -a whatsapp-remote-github-v2.2.0/. whatsapp-remote-vps/
+cd whatsapp-remote-vps
+
+git add -A
+git commit -m "WhatsApp Remote VPS v2.2.0 — instalador inteligente e Manager"
+git push origin main
 ```
 
-Exemplo:
+Os arquivos `setup.sh`, `install.sh` e a pasta `lib` devem aparecer diretamente na raiz do GitHub.
 
-```bash
-DEFAULT_REPOSITORY="DuiBR/whatsapp-remote-vps"
-```
-
-## 3. Enviar os arquivos
-
-Os arquivos devem ficar diretamente na raiz do repositório:
-
-```text
-setup.sh
-install.sh
-manage.sh
-repair.sh
-status.sh
-uninstall.sh
-lib/common.sh
-README.md
-```
-
-## 4. Instalar por um único link
+## Testar o link
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash
 ```
 
-O comando sem parâmetros executa o modo guiado quando há um terminal disponível. As senhas aparecem durante a digitação.
-
-Para instalação totalmente automática, sem perguntas:
+## Criar uma versão fixa
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash -s -- --auto
+git tag -a v2.2.0 -m "WhatsApp Remote VPS v2.2.0"
+git push origin v2.2.0
 ```
 
-Instalar informando o IP:
+Instalar a tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash -s -- --ip 164.152.48.215
-```
-
-Reparar ou atualizar preservando o perfil do WhatsApp:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash -s -- --repair --auto
-```
-
-Instalar uma tag específica:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash -s -- --ref v2.1.1 --auto
+curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
+sudo bash -s -- --ref v2.2.0
 ```
 
 ## Repositório privado
 
-O comando simples funciona diretamente em repositórios públicos. Para repositórios privados, a própria obtenção de `setup.sh` exige autenticação. Não coloque token fixo no arquivo, no README ou na URL.
+Para repositório privado, exporte temporariamente um token com permissão de leitura:
+
+```bash
+export WR_GITHUB_TOKEN='TOKEN'
+curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
+sudo -E bash
+unset WR_GITHUB_TOKEN
+```
+
+Nunca grave tokens dentro dos scripts ou faça commit de credenciais.

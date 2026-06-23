@@ -4,13 +4,13 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
-
 require_root
 
 prompt_password_twice() {
   local label="$1" min_length="$2" first second
   while true; do
-    read -r -p "$label (visível): " first
+    read -r -p "$label (visível; 0 para voltar): " first
+    [[ "$first" == "0" ]] && return 1
     [[ ${#first} -ge min_length ]] || { warn "Use pelo menos ${min_length} caracteres."; continue; }
     read -r -p "Repita a senha (visível): " second
     [[ "$first" == "$second" ]] || { warn "As senhas não conferem."; continue; }
@@ -19,27 +19,54 @@ prompt_password_twice() {
   done
 }
 
+confirm_action() {
+  local text="$1"
+  ui_yes_no "$text" n
+}
+
+manager_dashboard() {
+  load_config
+  local d n w ip
+  d="$(systemctl is-active "$SERVICE_DESKTOP" 2>/dev/null || true)"
+  n="$(systemctl is-active "$SERVICE_NOVNC" 2>/dev/null || true)"
+  w="$(systemctl is-active nginx 2>/dev/null || true)"
+  ip="$(detect_public_ip || true)"
+  printf ' URL: %s\n' "$(access_url)"
+  printf ' IP atual: %s | Desktop: %s | noVNC: %s | Nginx: %s\n' \
+    "${ip:-não detectado}" "$d" "$n" "$w"
+  printf ' RAM: %s | Swap: %s | Disco livre: %s\n' \
+    "$(free -h | awk '/Mem:/ {print $3 "/" $2}')" \
+    "$(free -h | awk '/Swap:/ {print $3 "/" $2}')" \
+    "$(df -h / | awk 'NR==2 {print $4}')"
+}
+
 change_web_credentials() {
   load_config
-  local username password
-  read -r -p "Novo usuário web [${WEB_USER}]: " username
-  username="${username:-$WEB_USER}"
-  is_valid_web_user "$username" || die "Usuário web inválido."
-  password="$(prompt_password_twice 'Nova senha web (mínimo 10 caracteres)' 10)"
+  local username password answer
+  ui_header "Alterar login do acesso web"
+  echo "Usuário atual: $WEB_USER"
+  read -r -p "Novo usuário [${WEB_USER}; 0 para voltar]: " answer
+  [[ "$answer" == "0" ]] && return 0
+  username="${answer:-$WEB_USER}"
+  is_valid_web_user "$username" || { warn "Usuário web inválido."; return 1; }
+  password="$(prompt_password_twice 'Nova senha web — mínimo 10 caracteres' 10)" || return 0
   set_web_credentials "$username" "$password"
   save_config
+  nginx -t
   systemctl reload nginx
   write_credentials_file "" "$password"
   unset password
   ok "Usuário e senha web alterados."
-  echo "Usuário web: $WEB_USER"
-  echo "Arquivo protegido: $CREDENTIALS_FILE"
+  echo "Novo usuário: $WEB_USER"
+  echo "Credenciais salvas em: $CREDENTIALS_FILE"
 }
 
 change_vnc_password() {
   load_config
   local password
-  password="$(prompt_password_twice 'Nova senha VNC (mínimo 8; somente os 8 primeiros são usados)' 8)"
+  ui_header "Alterar senha da sessão VNC"
+  echo "A senha VNC é solicitada dentro da página noVNC."
+  password="$(prompt_password_twice 'Nova senha VNC — mínimo 8 caracteres' 8)" || return 0
   set_vnc_password "$password"
   restart_stack
   write_credentials_file "$password" ""
@@ -50,21 +77,23 @@ change_vnc_password() {
 change_desktop_user() {
   load_config
   local old_user="$APP_USER" old_group="$APP_GROUP" old_home="$APP_HOME"
-  local new_user new_home new_group
-  read -r -p "Novo usuário Linux do desktop: " new_user
-  is_valid_linux_user "$new_user" || die "Usuário inválido: $new_user"
+  local new_user new_home
+  ui_header "Alterar usuário Linux do desktop"
+  echo "Usuário atual: $old_user"
+  echo "O perfil do navegador e a sessão do WhatsApp serão preservados."
+  read -r -p "Novo usuário [0 para voltar]: " new_user
+  [[ "$new_user" == "0" ]] && return 0
+  is_valid_linux_user "$new_user" || { warn "Usuário inválido: $new_user"; return 1; }
   [[ "$new_user" != "$old_user" ]] || { info "O usuário já é $old_user."; return 0; }
-  ! id "$new_user" >/dev/null 2>&1 || die "O usuário $new_user já existe."
+  ! id "$new_user" >/dev/null 2>&1 || { warn "O usuário $new_user já existe."; return 1; }
+  confirm_action "Confirmar a alteração de '$old_user' para '$new_user'?" || return 0
 
-  warn "O desktop será reiniciado, mas o perfil e a sessão do WhatsApp serão preservados."
+  backup_current_config
   systemctl stop "$SERVICE_NOVNC" "$SERVICE_DESKTOP" 2>/dev/null || true
   pkill -KILL -u "$old_user" 2>/dev/null || true
   sleep 1
-
   usermod -l "$new_user" "$old_user"
-  if [[ "$old_group" == "$old_user" ]] && getent group "$old_group" >/dev/null; then
-    groupmod -n "$new_user" "$old_group"
-  fi
+  if [[ "$old_group" == "$old_user" ]] && getent group "$old_group" >/dev/null; then groupmod -n "$new_user" "$old_group"; fi
   new_home="/home/$new_user"
   usermod -d "$new_home" -m "$new_user"
 
@@ -73,10 +102,7 @@ change_desktop_user() {
   APP_GROUP="$(id -gn "$new_user")"
   APP_UID="$(id -u "$new_user")"
   APP_GID="$(id -g "$new_user")"
-  if [[ "$PROFILE_DIR" == "$old_home"/* ]]; then
-    PROFILE_DIR="$new_home/${PROFILE_DIR#"$old_home"/}"
-  fi
-
+  if [[ "$PROFILE_DIR" == "$old_home"/* ]]; then PROFILE_DIR="$new_home/${PROFILE_DIR#"$old_home"/}"; fi
   chown -R "$APP_USER:$APP_GROUP" "$APP_HOME"
   save_config
   render_runtime_scripts
@@ -86,132 +112,293 @@ change_desktop_user() {
   systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null
   restart_stack
   write_credentials_file "" ""
-  ok "Usuário Linux alterado de $old_user para $APP_USER."
+  ok "Usuário alterado de $old_user para $APP_USER."
 }
 
 change_resolution() {
   load_config
-  local geometry
-  read -r -p "Nova resolução [${GEOMETRY}]: " geometry
-  geometry="${geometry:-$GEOMETRY}"
-  is_valid_geometry "$geometry" || die "Resolução inválida. Exemplo: 1280x720"
-  GEOMETRY="$geometry"
-  save_config
-  restart_stack
-  ok "Resolução alterada para $GEOMETRY."
+  local choice geometry
+  while true; do
+    ui_header "Alterar resolução do desktop remoto"
+    echo "Atual: $GEOMETRY"
+    echo
+    echo "  1) 1024x768  — menor consumo"
+    echo "  2) 1280x720  — recomendado"
+    echo "  3) 1366x768"
+    echo "  4) 1600x900"
+    echo "  5) Informar manualmente"
+    echo "  0) Voltar"
+    echo
+    read -r -p "Escolha: " choice
+    case "$choice" in
+      1) geometry="1024x768" ;;
+      2) geometry="1280x720" ;;
+      3) geometry="1366x768" ;;
+      4) geometry="1600x900" ;;
+      5) read -r -p "Resolução no formato LARGURAxALTURA: " geometry ;;
+      0) return 0 ;;
+      *) warn "Opção inválida."; ui_pause; continue ;;
+    esac
+    is_valid_geometry "$geometry" || { warn "Resolução inválida."; ui_pause; continue; }
+    GEOMETRY="$geometry"
+    save_config
+    restart_stack
+    ok "Resolução alterada para $GEOMETRY."
+    return 0
+  done
 }
 
 configure_ip_access_menu() {
   load_config
-  local ip
-  ip="$(detect_public_ip || true)"
-  read -r -p "IPv4 público [${ip:-${PUBLIC_IP:-}}]: " answer
-  ip="${answer:-${ip:-${PUBLIC_IP:-}}}"
-  is_valid_ipv4 "$ip" || die "IPv4 inválido."
+  local detected ip answer
+  detected="$(detect_public_ip || true)"
+  ui_header "Configurar acesso HTTPS pelo IP"
+  echo "IP detectado: ${detected:-não detectado}"
+  echo "IP configurado: ${PUBLIC_IP:-nenhum}"
+  read -r -p "IPv4 público [${detected:-${PUBLIC_IP:-}}; 0 para voltar]: " answer
+  [[ "$answer" == "0" ]] && return 0
+  ip="${answer:-${detected:-${PUBLIC_IP:-}}}"
+  is_valid_ipv4 "$ip" || { warn "IPv4 inválido."; return 1; }
+  backup_current_config
   configure_nginx_ip "$ip"
   open_local_firewall 0
   write_credentials_file "" ""
   ok "Acesso por IP configurado: $(access_url)"
+  echo "O navegador exibirá aviso porque o certificado por IP é autoassinado."
 }
 
 configure_domain_access_menu() {
   load_config
-  local domain email
-  read -r -p "Domínio já apontado para esta VPS [${DOMAIN:-}]: " domain
-  domain="${domain:-${DOMAIN:-}}"
+  local domain email answer
+  ui_header "Configurar acesso por domínio"
+  echo "Antes de continuar, o domínio deve apontar para o IP desta VPS."
+  read -r -p "Domínio [${DOMAIN:-}; 0 para voltar]: " answer
+  [[ "$answer" == "0" ]] && return 0
+  domain="${answer:-${DOMAIN:-}}"
+  is_valid_domain "$domain" || { warn "Domínio inválido."; return 1; }
   read -r -p "E-mail do Let's Encrypt: " email
+  is_valid_email "$email" || { warn "E-mail inválido."; return 1; }
+  backup_current_config
   configure_nginx_domain "$domain" "$email"
   open_local_firewall 1
   write_credentials_file "" ""
   ok "Acesso por domínio configurado: $(access_url)"
 }
 
+access_menu() {
+  local choice
+  while true; do
+    ui_header "Configuração de acesso remoto"
+    load_config
+    echo "Atual: $(access_url)"
+    echo
+    echo "  1) Detectar IP e configurar HTTPS pelo IP"
+    echo "  2) Configurar domínio e certificado Let's Encrypt"
+    echo "  3) Mostrar informações de firewall"
+    echo "  0) Voltar"
+    echo
+    read -r -p "Escolha: " choice
+    case "$choice" in
+      1) configure_ip_access_menu; ui_pause ;;
+      2) configure_domain_access_menu; ui_pause ;;
+      3)
+        echo "Libere externamente TCP 443. Para domínio/Let's Encrypt, libere também TCP 80."
+        echo "Mantenha 5901 e 6080 fechadas para a Internet."
+        ui_pause
+        ;;
+      0) return 0 ;;
+      *) warn "Opção inválida."; ui_pause ;;
+    esac
+  done
+}
+
 repair_installation() {
+  ui_header "Reparação automática"
   detect_platform
   load_config
-  id "$APP_USER" >/dev/null 2>&1 || die "Usuário $APP_USER não existe."
+  backup_current_config
+  local generated_vnc="" generated_web=""
+  info "Verificando usuário, permissões e diretórios..."
+  if ! id "$APP_USER" >/dev/null 2>&1; then
+    warn "Usuário $APP_USER não existe; recriando."
+    useradd -m -U -s /bin/bash "$APP_USER"
+    APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+  fi
   APP_GROUP="$(id -gn "$APP_USER")"
   APP_UID="$(id -u "$APP_USER")"
   APP_GID="$(id -g "$APP_USER")"
+  install -d -m 700 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME/.vnc" "$PROFILE_DIR"
+  install -d -m 755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME/.config/openbox"
+
+  if [[ ! -s "$APP_HOME/.vnc/passwd" ]]; then
+    generated_vnc="$(random_password 8)"
+    set_vnc_password "$generated_vnc"
+    warn "A senha VNC estava ausente e foi recriada."
+  else
+    chown "$APP_USER:$APP_GROUP" "$APP_HOME/.vnc/passwd"
+    chmod 600 "$APP_HOME/.vnc/passwd"
+  fi
+  if [[ ! -s "$HTPASSWD_FILE" ]]; then
+    generated_web="$(random_password 18)"
+    set_web_credentials "${WEB_USER:-remoteadmin}" "$generated_web"
+    warn "A autenticação web estava ausente e foi recriada."
+  else
+    chown root:www-data "$HTPASSWD_FILE"
+    chmod 640 "$HTPASSWD_FILE"
+  fi
+
   chown -R "$APP_USER:$APP_GROUP" "$APP_HOME/.vnc" "$APP_HOME/.config/openbox" "$PROFILE_DIR" 2>/dev/null || true
-  chmod 600 "$APP_HOME/.vnc/passwd"
   save_config
   render_runtime_scripts
   render_openbox_config
   configure_novnc_mobile_defaults
   render_systemd_units
-  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null
+  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx >/dev/null
+  nginx -t
   restart_stack
-  ok "Instalação reparada."
+  write_credentials_file "$generated_vnc" "$generated_web"
+  ok "Reparação concluída."
   show_status
 }
 
-show_logs() {
-  echo "===== DESKTOP / VNC ====="
-  journalctl -u "$SERVICE_DESKTOP" -n 80 --no-pager || true
-  echo
-  echo "===== NOVNC ====="
-  journalctl -u "$SERVICE_NOVNC" -n 80 --no-pager || true
-  echo
-  echo "===== NGINX ====="
-  journalctl -u nginx -n 40 --no-pager || true
+update_from_github() {
+  load_config
+  local repository="${GITHUB_REPOSITORY:-$GITHUB_REPOSITORY_DEFAULT}"
+  local ref="${GITHUB_REF:-$GITHUB_REF_DEFAULT}"
+  local tmp
+  ui_header "Atualizar e reparar pelo GitHub"
+  echo "Repositório: $repository"
+  echo "Referência:  $ref"
+  echo "O perfil e a sessão do WhatsApp serão preservados."
+  confirm_action "Baixar a versão atual e executar reparação completa?" || return 0
+  tmp="$(mktemp)"
+  curl -fsSL --retry 4 --connect-timeout 15 --max-time 120 \
+    "https://raw.githubusercontent.com/${repository}/${ref}/setup.sh" -o "$tmp" || {
+      rm -f "$tmp"
+      warn "Não foi possível baixar o setup.sh."
+      return 1
+    }
+  chmod 700 "$tmp"
+  bash "$tmp" --repository "$repository" --ref "$ref" --repair --auto
+  rm -f "$tmp"
+  ok "Atualização/reparação concluída."
+}
+
+show_logs_menu() {
+  local choice
+  while true; do
+    ui_header "Logs e diagnóstico"
+    echo "  1) Desktop/VNC — últimas 100 linhas"
+    echo "  2) noVNC — últimas 100 linhas"
+    echo "  3) Nginx — últimas 100 linhas"
+    echo "  4) Instalação — últimas 120 linhas"
+    echo "  5) Acompanhar Desktop/VNC ao vivo (Ctrl+C para sair)"
+    echo "  6) Acompanhar noVNC ao vivo (Ctrl+C para sair)"
+    echo "  0) Voltar"
+    echo
+    read -r -p "Escolha: " choice
+    case "$choice" in
+      1) journalctl -u "$SERVICE_DESKTOP" -n 100 --no-pager; ui_pause ;;
+      2) journalctl -u "$SERVICE_NOVNC" -n 100 --no-pager; ui_pause ;;
+      3) journalctl -u nginx -n 100 --no-pager; ui_pause ;;
+      4) tail -n 120 "$INSTALL_LOG" 2>/dev/null || warn "Log não encontrado."; ui_pause ;;
+      5) journalctl -u "$SERVICE_DESKTOP" -f || true ;;
+      6) journalctl -u "$SERVICE_NOVNC" -f || true ;;
+      0) return 0 ;;
+      *) warn "Opção inválida."; ui_pause ;;
+    esac
+  done
 }
 
 show_info() {
   load_config
-  echo "URL: $(access_url)"
-  echo "Usuário web: $WEB_USER"
-  echo "Usuário Linux do desktop: $APP_USER"
-  echo "Perfil persistente: $PROFILE_DIR"
-  echo "Credenciais iniciais/alteradas: $CREDENTIALS_FILE"
-  echo "As senhas em hash não podem ser recuperadas; podem ser redefinidas neste gerenciador."
+  ui_header "Informações de acesso"
+  echo "URL:                      $(access_url)"
+  echo "Usuário web:              $WEB_USER"
+  echo "Usuário Linux desktop:    $APP_USER"
+  echo "Perfil persistente:       $PROFILE_DIR"
+  echo "Arquivo de credenciais:   $CREDENTIALS_FILE"
+  echo
+  if [[ -r "$CREDENTIALS_FILE" ]]; then
+    echo "Conteúdo do arquivo protegido:"
+    ui_rule
+    cat "$CREDENTIALS_FILE"
+    ui_rule
+  fi
+  echo
+  echo "Senhas antigas armazenadas apenas em hash não podem ser recuperadas; podem ser redefinidas pelo menu."
 }
 
-restart_menu() {
-  load_config
-  restart_stack
-  ok "Desktop, noVNC e Nginx reiniciados."
-  show_status
-}
-
-menu() {
+service_menu() {
+  local choice
   while true; do
-    clear 2>/dev/null || true
-    echo "============================================================"
-    echo " $PROJECT_NAME — gerenciador $PROJECT_VERSION"
-    echo "============================================================"
-    echo " 1) Alterar usuário e senha web"
-    echo " 2) Alterar senha VNC"
-    echo " 3) Alterar usuário Linux do desktop"
-    echo " 4) Alterar resolução"
-    echo " 5) Configurar acesso HTTPS pelo IP"
-    echo " 6) Configurar acesso HTTPS por domínio"
-    echo " 7) Ver status"
-    echo " 8) Reiniciar serviços"
-    echo " 9) Ver informações de acesso"
-    echo "10) Ver logs"
-    echo "11) Reparar instalação"
-    echo " 0) Sair"
+    ui_header "Controle dos serviços"
+    manager_dashboard
+    echo
+    echo "  1) Iniciar todos"
+    echo "  2) Parar desktop e noVNC"
+    echo "  3) Reiniciar todos"
+    echo "  4) Ativar inicialização automática"
+    echo "  5) Desativar inicialização automática"
+    echo "  0) Voltar"
+    echo
+    read -r -p "Escolha: " choice
+    case "$choice" in
+      1) load_config; start_stack && ok "Serviços iniciados." || warn "Falha ao iniciar; consulte os logs."; ui_pause ;;
+      2) load_config; confirm_action "Parar o acesso remoto agora?" && { stop_stack; ok "Desktop e noVNC parados."; }; ui_pause ;;
+      3) load_config; restart_stack; ok "Serviços reiniciados."; ui_pause ;;
+      4) systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx >/dev/null; ok "Inicialização automática ativada."; ui_pause ;;
+      5) confirm_action "Desativar a inicialização automática?" && { systemctl disable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null; ok "Inicialização automática desativada."; }; ui_pause ;;
+      0) return 0 ;;
+      *) warn "Opção inválida."; ui_pause ;;
+    esac
+  done
+}
+
+run_uninstall() {
+  ui_header "Desinstalar o sistema"
+  warn "Esta opção remove serviços e acesso remoto. O perfil só será apagado se você confirmar dentro do desinstalador."
+  confirm_action "Abrir o desinstalador?" || return 0
+  exec bash "$INSTALL_DIR/uninstall.sh"
+}
+
+main_menu() {
+  local option
+  while true; do
+    ui_header "Manager $PROJECT_VERSION"
+    if [[ -r "$CONFIG_FILE" ]]; then manager_dashboard; else warn "Instalação não encontrada."; fi
+    echo
+    echo "  1) Ver acesso e credenciais"
+    echo "  2) Alterar usuário e senha web"
+    echo "  3) Alterar senha VNC"
+    echo "  4) Alterar usuário Linux do desktop"
+    echo "  5) Alterar resolução"
+    echo "  6) Configurar IP ou domínio"
+    echo "  7) Iniciar, parar ou reiniciar serviços"
+    echo "  8) Ver status detalhado"
+    echo "  9) Reparação automática"
+    echo " 10) Atualizar/reparar pelo GitHub"
+    echo " 11) Ver logs e diagnóstico"
+    echo " 12) Desinstalar"
+    echo "  0) Sair"
     echo
     read -r -p "Escolha: " option
-    echo
     case "$option" in
-      1) change_web_credentials ;;
-      2) change_vnc_password ;;
-      3) change_desktop_user ;;
-      4) change_resolution ;;
-      5) configure_ip_access_menu ;;
-      6) configure_domain_access_menu ;;
-      7) show_status ;;
-      8) restart_menu ;;
-      9) show_info ;;
-      10) show_logs ;;
-      11) repair_installation ;;
+      1) show_info; ui_pause ;;
+      2) change_web_credentials; ui_pause ;;
+      3) change_vnc_password; ui_pause ;;
+      4) change_desktop_user; ui_pause ;;
+      5) change_resolution; ui_pause ;;
+      6) access_menu ;;
+      7) service_menu ;;
+      8) ui_header "Status detalhado"; show_status; ui_pause ;;
+      9) repair_installation; ui_pause ;;
+      10) update_from_github; ui_pause ;;
+      11) show_logs_menu ;;
+      12) run_uninstall ;;
       0) exit 0 ;;
-      *) warn "Opção inválida." ;;
+      *) warn "Opção inválida."; ui_pause ;;
     esac
-    echo
-    read -r -p "Pressione Enter para continuar..." _
   done
 }
 
@@ -220,35 +407,43 @@ help_text() {
 Uso: sudo whatsapp-remote [comando]
 
 Comandos:
-  menu                 Abre o menu interativo
-  web-credentials      Altera usuário e senha da autenticação HTTPS
-  vnc-password         Altera a senha da sessão VNC
+  menu                 Abre o Manager interativo
+  info                 Mostra URL, usuários e arquivo de credenciais
+  web-credentials      Altera usuário e senha web
+  vnc-password         Altera a senha VNC
   desktop-user         Renomeia o usuário Linux preservando o perfil
   resolution           Altera a resolução remota
-  access-ip             Configura HTTPS por IP
-  access-domain         Configura HTTPS por domínio/Let's Encrypt
-  status                Exibe diagnóstico
-  restart               Reinicia toda a pilha
-  info                  Exibe URL e usuários
-  logs                  Exibe logs recentes
-  repair                Repara permissões, serviços e configurações
-  help                  Exibe esta ajuda
+  access-ip            Detecta/configura acesso HTTPS por IP
+  access-domain        Configura domínio e Let's Encrypt
+  start                Inicia a pilha
+  stop                 Para desktop e noVNC
+  restart              Reinicia toda a pilha
+  status               Exibe diagnóstico detalhado
+  repair               Repara permissões, serviços e configuração
+  update               Atualiza/repara pelo GitHub
+  logs                 Abre o menu de logs
+  uninstall            Abre o desinstalador
+  help                 Exibe esta ajuda
 HELP
 }
 
 case "${1:-menu}" in
-  menu) menu ;;
+  menu|manager) main_menu ;;
+  info) show_info ;;
   web-credentials) change_web_credentials ;;
   vnc-password) change_vnc_password ;;
   desktop-user) change_desktop_user ;;
   resolution) change_resolution ;;
   access-ip) configure_ip_access_menu ;;
   access-domain) configure_domain_access_menu ;;
+  start) load_config; start_stack; show_status ;;
+  stop) load_config; stop_stack; show_status ;;
+  restart) load_config; restart_stack; show_status ;;
   status) show_status ;;
-  restart) restart_menu ;;
-  info) show_info ;;
-  logs) show_logs ;;
   repair) repair_installation ;;
+  update) update_from_github ;;
+  logs) show_logs_menu ;;
+  uninstall) run_uninstall ;;
   help|-h|--help) help_text ;;
   *) die "Comando desconhecido: $1. Use: whatsapp-remote help" ;;
 esac
