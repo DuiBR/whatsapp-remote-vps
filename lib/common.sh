@@ -2,11 +2,15 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.0.0"
+PROJECT_VERSION="2.2.0"
+GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
+GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
 CONFIG_DIR="/etc/whatsapp-remote"
 CONFIG_FILE="${CONFIG_DIR}/config.env"
+CONFIG_BACKUP_DIR="/var/backups/whatsapp-remote"
 CREDENTIALS_FILE="/root/whatsapp-remote-credentials.txt"
+INSTALL_LOG="/var/log/whatsapp-remote-install.log"
 SERVICE_DESKTOP="whatsapp-desktop.service"
 SERVICE_NOVNC="whatsapp-novnc.service"
 NGINX_SITE="/etc/nginx/sites-available/whatsapp-remote"
@@ -14,23 +18,57 @@ NGINX_LINK="/etc/nginx/sites-enabled/whatsapp-remote"
 HTPASSWD_FILE="/etc/nginx/.htpasswd-whatsapp"
 SSL_DIR="/etc/nginx/ssl-whatsapp"
 
-C_RESET='\033[0m'
-C_RED='\033[1;31m'
-C_GREEN='\033[1;32m'
-C_YELLOW='\033[1;33m'
-C_BLUE='\033[1;34m'
+if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_RED=$'\033[1;31m'
+  C_GREEN=$'\033[1;32m'
+  C_YELLOW=$'\033[1;33m'
+  C_BLUE=$'\033[1;34m'
+  C_CYAN=$'\033[1;36m'
+  C_GRAY=$'\033[0;37m'
+else
+  C_RESET='' C_BOLD='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN='' C_GRAY=''
+fi
 
 info() { printf "%b[INFO]%b %s\n" "$C_BLUE" "$C_RESET" "$*"; }
 ok() { printf "%b[OK]%b %s\n" "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf "%b[AVISO]%b %s\n" "$C_YELLOW" "$C_RESET" "$*" >&2; }
 die() { printf "%b[ERRO]%b %s\n" "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
+ui_clear() { clear 2>/dev/null || printf '\n'; }
+ui_rule() { printf '%s\n' '────────────────────────────────────────────────────────────'; }
+ui_header() {
+  local subtitle="${1:-}"
+  ui_clear
+  printf "%b%s%b\n" "$C_BOLD$C_CYAN" "$PROJECT_NAME" "$C_RESET"
+  [[ -n "$subtitle" ]] && printf '%s\n' "$subtitle"
+  ui_rule
+}
+ui_pause() {
+  [[ -r /dev/tty ]] || return 0
+  printf '\n'
+  read -r -p "Pressione Enter para continuar..." _ < /dev/tty || true
+}
+ui_yes_no() {
+  local prompt="$1" default="${2:-n}" answer suffix
+  if [[ "$default" == "s" ]]; then suffix='[S/n]'; else suffix='[s/N]'; fi
+  while true; do
+    read -r -p "$prompt $suffix: " answer
+    answer="${answer:-$default}"
+    case "$answer" in
+      s|S|sim|SIM|Sim|y|Y|yes|YES|Yes) return 0 ;;
+      n|N|nao|não|NAO|NÃO|No|NO|no) return 1 ;;
+      *) warn "Responda com s ou n." ;;
+    esac
+  done
+}
+
 require_root() {
-  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Execute como root: sudo bash $0"
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Execute como root. Exemplo: sudo bash $0"
 }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
-
 shell_quote() { printf '%q' "$1"; }
 
 is_valid_linux_user() {
@@ -48,23 +86,38 @@ is_valid_geometry() {
 }
 
 is_valid_ipv4() {
-  local ip="$1" IFS=. octets=()
+  local ip="$1" IFS=. octets=() octet
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
   read -r -a octets <<< "$ip"
-  local octet
   for octet in "${octets[@]}"; do
     (( 10#$octet >= 0 && 10#$octet <= 255 )) || return 1
   done
+}
+
+is_public_ipv4() {
+  local ip="$1" a b
+  is_valid_ipv4 "$ip" || return 1
+  IFS=. read -r a b _ _ <<< "$ip"
+  (( a == 10 || a == 127 || a == 0 )) && return 1
+  (( a == 169 && b == 254 )) && return 1
+  (( a == 172 && b >= 16 && b <= 31 )) && return 1
+  (( a == 192 && b == 168 )) && return 1
+  (( a >= 224 )) && return 1
+  return 0
 }
 
 is_valid_domain() {
   [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
 }
 
+is_valid_email() {
+  [[ "$1" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]
+}
+
 random_password() {
   local length="${1:-16}" result=""
   if command_exists openssl; then
-    result="$(openssl rand -base64 48 2>/dev/null | tr -dc 'A-Za-z0-9@#%+=_' | head -c "$length" || true)"
+    result="$(openssl rand -base64 64 2>/dev/null | tr -dc 'A-Za-z0-9@#%+=_' | head -c "$length" || true)"
   fi
   if (( ${#result} < length )); then
     result="$(tr -dc 'A-Za-z0-9@#%+=_' </dev/urandom | head -c "$length" || true)"
@@ -79,8 +132,38 @@ wait_for_apt() {
     (( waited == 0 )) && info "Aguardando outro processo APT terminar..."
     sleep 3
     waited=$((waited + 3))
-    (( waited < 300 )) || die "O APT permaneceu bloqueado por mais de 5 minutos."
+    (( waited < 600 )) || die "O APT permaneceu bloqueado por mais de 10 minutos."
   done
+}
+
+apt_recover() {
+  wait_for_apt
+  dpkg --configure -a >/dev/null 2>&1 || true
+  DEBIAN_FRONTEND=noninteractive apt-get -f install -y >/dev/null 2>&1 || true
+}
+
+apt_update_retry() {
+  local attempt
+  wait_for_apt
+  for attempt in 1 2 3; do
+    if DEBIAN_FRONTEND=noninteractive apt-get update; then return 0; fi
+    warn "apt-get update falhou (tentativa ${attempt}/3)."
+    apt_recover
+    sleep $((attempt * 3))
+  done
+  die "Não foi possível atualizar os repositórios APT."
+}
+
+apt_install_retry() {
+  local attempt
+  wait_for_apt
+  for attempt in 1 2 3; do
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"; then return 0; fi
+    warn "Instalação de pacotes falhou (tentativa ${attempt}/3)."
+    apt_recover
+    sleep $((attempt * 3))
+  done
+  die "Não foi possível instalar os pacotes necessários: $*"
 }
 
 detect_platform() {
@@ -107,19 +190,97 @@ detect_platform() {
   export OS_ID OS_VERSION OS_NAME ARCH
 }
 
+detect_cloud_provider() {
+  local vendor product
+  vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+  product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+  case "${vendor} ${product}" in
+    *Oracle*|*OCI*) printf 'Oracle Cloud' ;;
+    *Amazon*|*EC2*) printf 'AWS' ;;
+    *Google*) printf 'Google Cloud' ;;
+    *Microsoft*|*Azure*) printf 'Microsoft Azure' ;;
+    *) printf 'VPS/servidor' ;;
+  esac
+}
+
+detect_private_ip() {
+  local ip
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
+  is_valid_ipv4 "$ip" && printf '%s' "$ip"
+}
+
 detect_public_ip() {
-  local ip="" endpoint
+  local ip="" endpoint metadata
+
+  # Oracle Cloud Instance Metadata v2, quando disponível.
+  metadata="$(curl -4 -fsS --connect-timeout 1 --max-time 2 \
+    -H 'Authorization: Bearer Oracle' \
+    http://169.254.169.254/opc/v2/vnics/ 2>/dev/null || true)"
+  if [[ -n "$metadata" ]]; then
+    ip="$(printf '%s' "$metadata" | grep -oE '"publicIp"[[:space:]]*:[[:space:]]*"([0-9]{1,3}\.){3}[0-9]{1,3}"' | head -n1 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)"
+    if is_public_ipv4 "$ip"; then printf '%s' "$ip"; return 0; fi
+  fi
+
   for endpoint in \
     "https://api.ipify.org" \
+    "https://checkip.amazonaws.com" \
     "https://ifconfig.me/ip" \
     "https://icanhazip.com"; do
     ip="$(curl -4 -fsS --connect-timeout 4 --max-time 8 "$endpoint" 2>/dev/null | tr -d '[:space:]' || true)"
-    if is_valid_ipv4 "$ip"; then
-      printf '%s' "$ip"
-      return 0
-    fi
+    if is_public_ipv4 "$ip"; then printf '%s' "$ip"; return 0; fi
   done
+
+  # Último recurso: endereço global diretamente atribuído à interface.
+  while read -r ip; do
+    if is_public_ipv4 "$ip"; then printf '%s' "$ip"; return 0; fi
+  done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}')
   return 1
+}
+
+memory_mb() { awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo; }
+disk_free_mb() { df -Pm / | awk 'NR==2 {print $4}'; }
+
+recommended_geometry() {
+  local mem
+  mem="$(memory_mb)"
+  if (( mem < 900 )); then printf '1024x768'; else printf '1280x720'; fi
+}
+
+recommended_swap_mb() {
+  local mem current_swap
+  mem="$(memory_mb)"
+  current_swap="$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo)"
+  if (( current_swap > 0 )); then printf '0'; return; fi
+  if (( mem < 1600 )); then printf '2048'
+  elif (( mem < 3000 )); then printf '1024'
+  else printf '0'
+  fi
+}
+
+preflight_checks() {
+  detect_platform
+  command_exists systemctl || die "Este instalador exige systemd."
+  command_exists apt-get || die "apt-get não encontrado."
+  local free_mb mem_mb
+  free_mb="$(disk_free_mb)"
+  mem_mb="$(memory_mb)"
+  (( free_mb >= 2500 )) || die "Espaço insuficiente. São necessários pelo menos 2,5 GB livres; disponível: ${free_mb} MB."
+  (( mem_mb >= 500 )) || warn "A máquina possui somente ${mem_mb} MB de RAM. O sistema tentará criar swap, mas pode ficar lento."
+  if ! getent hosts github.com >/dev/null 2>&1 && ! getent hosts dl.google.com >/dev/null 2>&1; then
+    warn "A resolução DNS parece indisponível. A instalação poderá falhar ao baixar pacotes."
+  fi
+}
+
+backup_current_config() {
+  [[ -d "$CONFIG_DIR" || -d "$INSTALL_DIR" ]] || return 0
+  install -d -m 700 "$CONFIG_BACKUP_DIR"
+  local stamp archive
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  archive="$CONFIG_BACKUP_DIR/config-${stamp}.tar.gz"
+  tar -czf "$archive" \
+    --ignore-failed-read \
+    "$CONFIG_DIR" "$HTPASSWD_FILE" "$NGINX_SITE" "$SSL_DIR" 2>/dev/null || true
+  chmod 600 "$archive" 2>/dev/null || true
 }
 
 load_config() {
@@ -143,6 +304,8 @@ load_config() {
   : "${PUBLIC_IP:=}"
   : "${DOMAIN:=}"
   : "${WEB_USER:=remoteadmin}"
+  : "${GITHUB_REPOSITORY:=$GITHUB_REPOSITORY_DEFAULT}"
+  : "${GITHUB_REF:=$GITHUB_REF_DEFAULT}"
 }
 
 save_config() {
@@ -171,6 +334,8 @@ save_config() {
     printf 'PUBLIC_IP=%q\n' "$PUBLIC_IP"
     printf 'DOMAIN=%q\n' "$DOMAIN"
     printf 'WEB_USER=%q\n' "$WEB_USER"
+    printf 'GITHUB_REPOSITORY=%q\n' "${GITHUB_REPOSITORY:-$GITHUB_REPOSITORY_DEFAULT}"
+    printf 'GITHUB_REF=%q\n' "${GITHUB_REF:-$GITHUB_REF_DEFAULT}"
   } > "$tmp"
   chown root:"$APP_GROUP" "$tmp"
   chmod 640 "$tmp"
@@ -180,10 +345,7 @@ save_config() {
 find_vnc_password_command() {
   local candidate
   for candidate in tigervncpasswd vncpasswd; do
-    if command_exists "$candidate"; then
-      command -v "$candidate"
-      return 0
-    fi
+    if command_exists "$candidate"; then command -v "$candidate"; return 0; fi
   done
   return 1
 }
@@ -214,21 +376,21 @@ write_credentials_file() {
   umask 077
   {
     echo "$PROJECT_NAME $PROJECT_VERSION"
-    echo "Gerado em: $(date -Is)"
+    echo "Atualizado em: $(date -Is)"
     echo "URL: $(access_url)"
     echo "Usuário web: $WEB_USER"
     if [[ -n "$web_password" ]]; then
       echo "Senha web: $web_password"
     else
-      echo "Senha web: não recuperável; altere com 'whatsapp-remote web-credentials'"
+      echo "Senha web: não recuperável; redefina com 'whatsapp-remote web-credentials'"
     fi
     echo "Usuário do desktop Linux: $APP_USER"
     if [[ -n "$vnc_password" ]]; then
       echo "Senha VNC: $vnc_password"
     else
-      echo "Senha VNC: não recuperável; altere com 'whatsapp-remote vnc-password'"
+      echo "Senha VNC: não recuperável; redefina com 'whatsapp-remote vnc-password'"
     fi
-    echo "Observação: o VNC clássico utiliza somente os primeiros 8 caracteres da senha."
+    echo "Observação: o protocolo VNC clássico considera somente os primeiros 8 caracteres."
   } > "$CREDENTIALS_FILE"
   chmod 600 "$CREDENTIALS_FILE"
 }
@@ -246,10 +408,7 @@ access_url() {
 find_novnc_webroot() {
   local path
   for path in /usr/share/novnc /usr/share/noVNC /opt/novnc; do
-    if [[ -f "$path/vnc.html" ]]; then
-      printf '%s' "$path"
-      return 0
-    fi
+    if [[ -f "$path/vnc.html" ]]; then printf '%s' "$path"; return 0; fi
   done
   return 1
 }
@@ -314,7 +473,6 @@ for _ in $(seq 1 80); do
   sleep 0.25
 done
 DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 || { echo "O servidor gráfico não iniciou corretamente."; exit 1; }
-
 exec dbus-run-session -- openbox-session
 SCRIPT
   chmod 755 /usr/local/bin/whatsapp-desktop-start
@@ -343,11 +501,9 @@ COMMON_FLAGS=(
   --disable-features=Translate,MediaRouter
   --start-maximized
 )
-
 if [[ "$LOW_RAM" == "1" ]]; then
   COMMON_FLAGS+=(--process-per-site --renderer-process-limit=3)
 fi
-
 while true; do
   "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "https://web.whatsapp.com/" || true
   sleep 4
@@ -372,7 +528,7 @@ render_systemd_units() {
   novnc_web="$(find_novnc_webroot)" || die "Diretório web do noVNC não encontrado."
   websockify_bin="$(command -v websockify)" || die "websockify não encontrado."
 
-  cat > /etc/systemd/system/$SERVICE_DESKTOP <<SERVICE
+  cat > "/etc/systemd/system/$SERVICE_DESKTOP" <<SERVICE
 [Unit]
 Description=Desktop Openbox persistente para WhatsApp Web
 After=network-online.target
@@ -388,8 +544,8 @@ ExecStartPre=+/usr/bin/install -d -m 0700 -o ${APP_UID} -g ${APP_GID} /run/user/
 ExecStart=/usr/local/bin/whatsapp-desktop-start
 Restart=always
 RestartSec=5
-TimeoutStartSec=45
-TimeoutStopSec=20
+TimeoutStartSec=60
+TimeoutStopSec=25
 KillMode=control-group
 OOMScoreAdjust=-200
 
@@ -397,7 +553,7 @@ OOMScoreAdjust=-200
 WantedBy=multi-user.target
 SERVICE
 
-  cat > /etc/systemd/system/$SERVICE_NOVNC <<SERVICE
+  cat > "/etc/systemd/system/$SERVICE_NOVNC" <<SERVICE
 [Unit]
 Description=noVNC local para WhatsApp Web
 After=network-online.target ${SERVICE_DESKTOP}
@@ -414,7 +570,6 @@ OOMScoreAdjust=-300
 [Install]
 WantedBy=multi-user.target
 SERVICE
-
   systemctl daemon-reload
 }
 
@@ -427,7 +582,6 @@ write_nginx_proxy_locations() {
     location /websockify {
         auth_basic "WhatsApp Remote";
         auth_basic_user_file ${HTPASSWD_FILE};
-
         proxy_pass http://127.0.0.1:${NOVNC_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -442,7 +596,6 @@ write_nginx_proxy_locations() {
     location / {
         auth_basic "WhatsApp Remote";
         auth_basic_user_file ${HTPASSWD_FILE};
-
         proxy_pass http://127.0.0.1:${NOVNC_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -452,6 +605,26 @@ write_nginx_proxy_locations() {
         proxy_buffering off;
     }
 NGINX
+}
+
+write_nginx_ip_site() {
+  local default_flag="${1:-default_server}"
+  {
+    cat <<NGINX
+server {
+    listen 443 ssl ${default_flag};
+    listen [::]:443 ssl ${default_flag};
+    server_name _ ${PUBLIC_IP};
+    ssl_certificate ${SSL_DIR}/whatsapp-ip.crt;
+    ssl_certificate_key ${SSL_DIR}/whatsapp-ip.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+NGINX
+    write_nginx_proxy_locations
+    echo "}"
+  } > "$NGINX_SITE"
 }
 
 configure_nginx_ip() {
@@ -470,25 +643,13 @@ configure_nginx_ip() {
   chmod 600 "$SSL_DIR/whatsapp-ip.key"
   chmod 644 "$SSL_DIR/whatsapp-ip.crt"
 
-  {
-    cat <<NGINX
-server {
-    listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
-    server_name _;
-
-    ssl_certificate ${SSL_DIR}/whatsapp-ip.crt;
-    ssl_certificate_key ${SSL_DIR}/whatsapp-ip.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_timeout 1d;
-NGINX
-    write_nginx_proxy_locations
-    echo "}"
-  } > "$NGINX_SITE"
-
-  rm -f /etc/nginx/sites-enabled/default
-  rm -f /etc/nginx/sites-enabled/whatsapp-remote-ip
+  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/whatsapp-remote-ip
   ln -sfn "$NGINX_SITE" "$NGINX_LINK"
+  write_nginx_ip_site default_server
+  if ! nginx -t >/dev/null 2>&1; then
+    warn "Já existe outro servidor HTTPS padrão no Nginx; usando configuração sem default_server."
+    write_nginx_ip_site ""
+  fi
   nginx -t
   systemctl enable --now nginx
   systemctl reload nginx
@@ -498,14 +659,12 @@ NGINX
 configure_nginx_domain() {
   local domain="$1" email="$2"
   is_valid_domain "$domain" || die "Domínio inválido: $domain"
-  [[ "$email" == *@*.* ]] || die "E-mail inválido: $email"
+  is_valid_email "$email" || die "E-mail inválido: $email"
   DOMAIN="${domain,,}"
   ACCESS_MODE="domain"
 
-  wait_for_apt
-  apt-get update
-  apt-get install -y --no-install-recommends certbot python3-certbot-nginx
-
+  apt_update_retry
+  apt_install_retry certbot python3-certbot-nginx
   {
     cat <<NGINX
 server {
@@ -517,13 +676,11 @@ NGINX
     echo "}"
   } > "$NGINX_SITE"
 
-  rm -f /etc/nginx/sites-enabled/default
-  rm -f /etc/nginx/sites-enabled/whatsapp-remote-ip
+  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/whatsapp-remote-ip
   ln -sfn "$NGINX_SITE" "$NGINX_LINK"
   nginx -t
   systemctl enable --now nginx
   systemctl reload nginx
-
   certbot --nginx -d "$DOMAIN" --redirect --non-interactive --agree-tos -m "$email"
   save_config
 }
@@ -542,11 +699,9 @@ open_local_firewall() {
 }
 
 wait_port() {
-  local host="$1" port="$2" timeout="${3:-30}" elapsed=0
+  local _host="$1" port="$2" timeout="${3:-30}" elapsed=0
   while (( elapsed < timeout )); do
-    if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
-      return 0
-    fi
+    if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then return 0; fi
     sleep 1
     elapsed=$((elapsed + 1))
   done
@@ -556,35 +711,81 @@ wait_port() {
 restart_stack() {
   systemctl stop "$SERVICE_NOVNC" 2>/dev/null || true
   systemctl restart "$SERVICE_DESKTOP"
-  wait_port 127.0.0.1 "$VNC_PORT" 45 || {
-    journalctl -u "$SERVICE_DESKTOP" -n 80 --no-pager >&2 || true
+  wait_port 127.0.0.1 "$VNC_PORT" 60 || {
+    journalctl -u "$SERVICE_DESKTOP" -n 100 --no-pager >&2 || true
     die "A porta VNC ${VNC_PORT} não abriu."
   }
   systemctl restart "$SERVICE_NOVNC"
-  wait_port 127.0.0.1 "$NOVNC_PORT" 30 || {
-    journalctl -u "$SERVICE_NOVNC" -n 80 --no-pager >&2 || true
+  wait_port 127.0.0.1 "$NOVNC_PORT" 45 || {
+    journalctl -u "$SERVICE_NOVNC" -n 100 --no-pager >&2 || true
     die "A porta noVNC ${NOVNC_PORT} não abriu."
   }
-  if command_exists nginx && nginx -t >/dev/null 2>&1; then
-    systemctl restart nginx
+  if command_exists nginx && nginx -t >/dev/null 2>&1; then systemctl restart nginx; fi
+}
+
+start_stack() {
+  systemctl start "$SERVICE_DESKTOP"
+  wait_port 127.0.0.1 "$VNC_PORT" 60 || return 1
+  systemctl start "$SERVICE_NOVNC"
+  wait_port 127.0.0.1 "$NOVNC_PORT" 45 || return 1
+  systemctl start nginx
+}
+
+stop_stack() {
+  systemctl stop "$SERVICE_NOVNC" "$SERVICE_DESKTOP" 2>/dev/null || true
+}
+
+service_badge() {
+  local service="$1" state
+  state="$(systemctl is-active "$service" 2>/dev/null || true)"
+  if [[ "$state" == "active" ]]; then printf '%bATIVO%b' "$C_GREEN" "$C_RESET"
+  else printf '%b%s%b' "$C_RED" "${state:-inativo}" "$C_RESET"; fi
+}
+
+port_badge() {
+  local port="$1"
+  if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
+    printf '%bATIVA%b' "$C_GREEN" "$C_RESET"
+  else
+    printf '%bINATIVA%b' "$C_RED" "$C_RESET"
   fi
 }
 
 show_status() {
   load_config
-  printf '%-28s %s\n' "Projeto:" "$PROJECT_NAME ${PROJECT_VERSION}"
-  printf '%-28s %s\n' "Sistema:" "${OS_ID} ${OS_VERSION} (${ARCH})"
-  printf '%-28s %s\n' "Usuário desktop:" "$APP_USER"
-  printf '%-28s %s\n' "Navegador:" "$BROWSER_TYPE — $BROWSER_BIN"
-  printf '%-28s %s\n' "Resolução:" "$GEOMETRY"
-  printf '%-28s %s\n' "URL:" "$(access_url)"
-  printf '%-28s %s\n' "Desktop Openbox:" "$(systemctl is-active "$SERVICE_DESKTOP" 2>/dev/null || true)"
-  printf '%-28s %s\n' "noVNC:" "$(systemctl is-active "$SERVICE_NOVNC" 2>/dev/null || true)"
-  printf '%-28s %s\n' "Nginx:" "$(systemctl is-active nginx 2>/dev/null || true)"
-  printf '%-28s %s\n' "VNC local ${VNC_PORT}:" "$(ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${VNC_PORT}$" && echo ativa || echo inativa)"
-  printf '%-28s %s\n' "noVNC local ${NOVNC_PORT}:" "$(ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${NOVNC_PORT}$" && echo ativa || echo inativa)"
-  printf '%-28s %s\n' "HTTPS 443:" "$(ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)443$' && echo ativa || echo inativa)"
-  printf '%-28s %s\n' "Chrome/Chromium:" "$(pgrep -u "$APP_USER" -f 'chrome|chromium' >/dev/null 2>&1 && echo ativo || echo inativo)"
-  printf '%-28s %s\n' "Memória disponível:" "$(free -h | awk '/Mem:/ {print $7}')"
-  printf '%-28s %s\n' "Swap usada/total:" "$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
+  local current_ip uptime_text
+  current_ip="$(detect_public_ip || true)"
+  uptime_text="$(uptime -p 2>/dev/null || true)"
+  printf '%-27s %s\n' "Projeto:" "$PROJECT_NAME $PROJECT_VERSION"
+  printf '%-27s %s\n' "Sistema:" "${OS_ID} ${OS_VERSION} (${ARCH})"
+  printf '%-27s %s\n' "Provedor detectado:" "$(detect_cloud_provider)"
+  printf '%-27s %s\n' "IP público atual:" "${current_ip:-não detectado}"
+  printf '%-27s %s\n' "URL configurada:" "$(access_url)"
+  printf '%-27s %s\n' "Usuário web:" "$WEB_USER"
+  printf '%-27s %s\n' "Usuário desktop:" "$APP_USER"
+  printf '%-27s %s\n' "Navegador:" "$BROWSER_TYPE"
+  printf '%-27s %s\n' "Resolução:" "$GEOMETRY"
+  printf '%-27s %b\n' "Desktop/VNC:" "$(service_badge "$SERVICE_DESKTOP")"
+  printf '%-27s %b\n' "noVNC:" "$(service_badge "$SERVICE_NOVNC")"
+  printf '%-27s %b\n' "Nginx:" "$(service_badge nginx)"
+  printf '%-27s %b\n' "Porta VNC ${VNC_PORT}:" "$(port_badge "$VNC_PORT")"
+  printf '%-27s %b\n' "Porta noVNC ${NOVNC_PORT}:" "$(port_badge "$NOVNC_PORT")"
+  printf '%-27s %b\n' "Porta HTTPS 443:" "$(port_badge 443)"
+  printf '%-27s %s\n' "Chrome/Chromium:" "$(pgrep -u "$APP_USER" -f 'chrome|chromium' >/dev/null 2>&1 && echo ativo || echo inativo)"
+  printf '%-27s %s\n' "Memória usada/total:" "$(free -h | awk '/Mem:/ {print $3 "/" $2}')"
+  printf '%-27s %s\n' "Swap usada/total:" "$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
+  printf '%-27s %s\n' "Disco livre em /:" "$(df -h / | awk 'NR==2 {print $4}')"
+  printf '%-27s %s\n' "Tempo ligado:" "${uptime_text:-indisponível}"
+}
+
+quick_healthcheck() {
+  load_config
+  local failures=0
+  systemctl is-active --quiet "$SERVICE_DESKTOP" || failures=$((failures + 1))
+  systemctl is-active --quiet "$SERVICE_NOVNC" || failures=$((failures + 1))
+  systemctl is-active --quiet nginx || failures=$((failures + 1))
+  wait_port 127.0.0.1 "$VNC_PORT" 1 || failures=$((failures + 1))
+  wait_port 127.0.0.1 "$NOVNC_PORT" 1 || failures=$((failures + 1))
+  wait_port 0.0.0.0 443 1 || failures=$((failures + 1))
+  return "$failures"
 }
