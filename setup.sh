@@ -109,6 +109,7 @@ detect_existing_installation() {
   [[ -r /etc/whatsapp-remote.conf ]] && INSTALL_MARKERS+=("configuração antiga")
   [[ -d /opt/whatsapp-remote ]] && INSTALL_MARKERS+=("arquivos em /opt")
   [[ -f /etc/systemd/system/whatsapp-desktop.service || -f /lib/systemd/system/whatsapp-desktop.service ]] && INSTALL_MARKERS+=("serviço desktop")
+  [[ -f /etc/systemd/system/whatsapp-browser.service || -f /lib/systemd/system/whatsapp-browser.service ]] && INSTALL_MARKERS+=("serviço navegador")
   [[ -f /etc/systemd/system/whatsapp-novnc.service || -f /lib/systemd/system/whatsapp-novnc.service ]] && INSTALL_MARKERS+=("serviço noVNC")
   if [[ -e /usr/local/sbin/whatsapp-remote ]] \
     || grep -q 'WHATSAPP_REMOTE_MENU_WRAPPER' /usr/local/bin/menu 2>/dev/null; then
@@ -187,8 +188,9 @@ bootstrap_existing_health() {
   printf '\n%bResumo da instalação encontrada%b\n' "$C_BOLD" "$C_RESET" > /dev/tty
   printf ' Estado detectado: %s\n' "$state_label" > /dev/tty
   printf ' Componentes: %s\n' "${markers_text:-não identificados}" > /dev/tty
-  printf ' Desktop/VNC: %b | noVNC: %b | Nginx: %b\n' \
+  printf ' Desktop: %b | Browser: %b | noVNC: %b | Nginx: %b\n' \
     "$(bootstrap_service_state whatsapp-desktop.service)" \
+    "$(bootstrap_service_state whatsapp-browser.service)" \
     "$(bootstrap_service_state whatsapp-novnc.service)" \
     "$(bootstrap_service_state nginx)" > /dev/tty
   pgrep -f 'chrome|chromium' >/dev/null 2>&1 && browser_state="ativo"
@@ -196,6 +198,7 @@ bootstrap_existing_health() {
 
   [[ -r /etc/whatsapp-remote/config.env || -r /etc/whatsapp-remote.conf ]] || errors=$((errors + 1))
   systemctl is-active --quiet whatsapp-desktop.service 2>/dev/null || errors=$((errors + 1))
+  systemctl is-active --quiet whatsapp-browser.service 2>/dev/null || warnings=$((warnings + 1))
   systemctl is-active --quiet whatsapp-novnc.service 2>/dev/null || errors=$((errors + 1))
   systemctl is-active --quiet nginx 2>/dev/null || errors=$((errors + 1))
   [[ "$browser_state" == "ativo" ]] || warnings=$((warnings + 1))

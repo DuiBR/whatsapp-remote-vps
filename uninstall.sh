@@ -38,7 +38,7 @@ if [[ -r "$CONFIG_FILE" ]]; then load_config; fi
 
 ui_header "Desinstalação"
 echo "Esta operação removerá:"
-echo "  • serviços systemd do desktop e noVNC"
+echo "  • serviços systemd do desktop, navegador e noVNC"
 echo "  • configuração Nginx deste projeto"
 echo "  • comandos 'menu' e 'whatsapp-remote'"
 echo "  • arquivos instalados e credenciais do projeto"
@@ -57,9 +57,9 @@ if (( ASSUME_YES == 0 )); then
 fi
 
 backup_current_config
-systemctl disable --now "$SERVICE_NOVNC" "$SERVICE_DESKTOP" 2>/dev/null || true
-rm -f "/etc/systemd/system/$SERVICE_NOVNC" "/etc/systemd/system/$SERVICE_DESKTOP"
-rm -f /usr/local/bin/whatsapp-desktop-start /usr/local/bin/whatsapp-browser /usr/local/bin/whatsapp-chrome
+systemctl disable --now "$SERVICE_NOVNC" "$SERVICE_BROWSER" "$SERVICE_DESKTOP" 2>/dev/null || true
+rm -f "/etc/systemd/system/$SERVICE_NOVNC" "/etc/systemd/system/$SERVICE_BROWSER" "/etc/systemd/system/$SERVICE_DESKTOP"
+rm -f /usr/local/bin/whatsapp-desktop-start /usr/local/bin/whatsapp-browser /usr/local/bin/whatsapp-session-status /usr/local/bin/whatsapp-chrome
 rm -f /usr/local/sbin/whatsapp-remote
 remove_menu_command
 rm -f "$NGINX_LINK" "$NGINX_SITE"

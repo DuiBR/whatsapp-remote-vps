@@ -1,5 +1,20 @@
 # 📋 Changelog
 
+## 2.5.0 — Navegador supervisionado e status do WhatsApp
+
+- Corrigida a falha recorrente em que Desktop/VNC, noVNC e Nginx ficavam ativos, mas o Chrome/Chromium não iniciava.
+- Criado o serviço systemd dedicado `whatsapp-browser.service`, independente do autostart do Openbox.
+- O navegador agora é reiniciado automaticamente pelo systemd após crash, encerramento inesperado ou reboot.
+- O reparo recria e habilita o serviço do navegador, remove travas antigas do perfil e aguarda a abertura real do Chrome.
+- A última mensagem do journal do navegador passa a aparecer no diagnóstico quando a inicialização falha.
+- Implementada recuperação inteligente do perfil persistente mais completo entre caminhos antigos e atuais, evitando perda da sessão após atualização.
+- Adicionada porta local de diagnóstico Chrome DevTools em `127.0.0.1:9222`, nunca exposta publicamente.
+- Adicionado detector local do estado do WhatsApp Web: conectado, aguardando QR Code, carregando, offline ou indeterminado.
+- O estado da sessão aparece no painel principal, no diagnóstico e no comando `whatsapp-remote whatsapp-status`.
+- Adicionada opção 14 no Manager para verificar a conexão do WhatsApp Web.
+- Menu de logs agora inclui o serviço do navegador e acompanhamento ao vivo.
+- Desinstalador atualizado para remover corretamente o novo serviço e o verificador local.
+
 ## 2.4.0 — Assistente contextual e diagnóstico preventivo
 
 - O comando oficial via `curl | sudo bash` agora identifica o contexto antes de agir.

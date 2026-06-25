@@ -99,6 +99,7 @@ elif [[ -r /etc/whatsapp-remote.conf ]]; then
   GEOMETRY="${GEOMETRY:-1280x720}"
   VNC_PORT="$((5900 + DISPLAY_NUMBER))"
   NOVNC_PORT=6080
+  CDP_PORT=9222
   PROFILE_DIR="$APP_HOME/.config/google-chrome-whatsapp"
   ACCESS_MODE="ip"
   PUBLIC_IP="${DETECTED_IP:-}"
@@ -461,7 +462,7 @@ apt_install_retry \
   openbox tint2 xterm dbus-x11 x11-utils xauth \
   tigervnc-standalone-server tigervnc-tools \
   novnc websockify nginx apache2-utils openssl curl wget ca-certificates gnupg unzip \
-  procps iproute2 psmisc fonts-liberation fonts-noto-color-emoji
+  procps iproute2 psmisc python3 fonts-liberation fonts-noto-color-emoji
 create_swap_if_needed
 
 stage 3 7 "Selecionando e instalando o navegador correto"
@@ -479,15 +480,8 @@ APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
 APP_GROUP="$(id -gn "$APP_USER")"
 APP_UID="$(id -u "$APP_USER")"
 APP_GID="$(id -g "$APP_USER")"
-if [[ -z "${PROFILE_DIR:-}" ]]; then
-  if [[ "$BROWSER_TYPE" == "Chromium Snap" ]]; then
-    PROFILE_DIR="$APP_HOME/snap/chromium/common/whatsapp-profile"
-  elif [[ -d "$APP_HOME/.config/google-chrome-whatsapp" ]]; then
-    PROFILE_DIR="$APP_HOME/.config/google-chrome-whatsapp"
-  else
-    PROFILE_DIR="$APP_HOME/.config/chrome-whatsapp"
-  fi
-fi
+CDP_PORT="${CDP_PORT:-9222}"
+recover_profile_dir
 install -d -m 700 -o "$APP_USER" -g "$APP_GROUP" "$PROFILE_DIR" "$APP_HOME/.vnc"
 if (( NEED_VNC_PASSWORD == 1 )); then set_vnc_password "$VNC_PASSWORD"; else chown "$APP_USER:$APP_GROUP" "$APP_HOME/.vnc/passwd"; chmod 600 "$APP_HOME/.vnc/passwd"; fi
 if (( NEED_WEB_PASSWORD == 1 )); then set_web_credentials "$WEB_USER" "$WEB_PASSWORD"; else chown root:www-data "$HTPASSWD_FILE"; chmod 640 "$HTPASSWD_FILE"; fi
@@ -511,7 +505,7 @@ render_runtime_scripts
 render_openbox_config
 configure_novnc_mobile_defaults
 render_systemd_units
-systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null
+systemctl enable "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" >/dev/null
 restart_stack
 
 stage 6 7 "Configurando acesso HTTPS"

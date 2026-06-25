@@ -1,5 +1,7 @@
 # 🟢 WhatsApp Remote VPS
 
+> **Versão 2.5.0:** navegador supervisionado separadamente e verificação local da conexão do WhatsApp.
+>
 > Execute o **WhatsApp Web 24 horas por dia** em uma VPS com desktop remoto acessível pelo navegador do celular ou computador.
 
 O projeto instala e configura automaticamente um ambiente gráfico leve com **Openbox**, **TigerVNC**, **noVNC**, **Nginx HTTPS** e **Google Chrome/Chromium**. A sessão do navegador é persistente e volta automaticamente depois de uma reinicialização da VPS.
@@ -13,9 +15,10 @@ O projeto instala e configura automaticamente um ambiente gráfico leve com **Op
 - 🔎 detecção automática do sistema, arquitetura, IP público, RAM, disco e provedor;
 - 🌐 acesso remoto pelo navegador usando HTTPS;
 - 📱 controles de toque configurados para celular;
-- ♻️ reinício automático do desktop, noVNC e navegador;
-- 💾 perfil persistente do Chrome/Chromium;
-- 🩺 diagnóstico que mostra serviços, portas, recursos e causas de falhas;
+- ♻️ reinício automático e serviço systemd dedicado para o navegador;
+- 💾 perfil persistente do Chrome/Chromium com recuperação automática do perfil antigo mais completo;
+- ✅ detecção local de sessão conectada, QR Code pendente, carregamento ou falta de conexão;
+- 🩺 diagnóstico que mostra serviços, portas, recursos, causa real da falha do navegador e estado da sessão;
 - 🛠️ reparação automática preservando a sessão do WhatsApp;
 - 🔐 alteração e visualização de usuários e senhas pelo Manager;
 - 🧹 reinstalação completa ou desinstalação assistida;
@@ -165,6 +168,7 @@ sudo whatsapp-remote
 11) Ver logs e diagnóstico
 12) Reinstalar tudo do zero
 13) Desinstalar
+14) Verificar conexão do WhatsApp Web
 0) Sair
 ```
 
@@ -176,7 +180,8 @@ O menu principal mostra imediatamente:
 
 - URL e IP público/privado;
 - sistema, arquitetura e kernel;
-- estado do Desktop/VNC, noVNC, Nginx e navegador;
+- estado do Desktop/VNC, serviço dedicado do navegador, noVNC, Nginx e processo do Chrome/Chromium;
+- estado estimado do WhatsApp Web: conectado, aguardando QR Code, carregando, offline ou não confirmado;
 - RAM, swap, disco e carga do sistema;
 - quantidade de erros e avisos;
 - descrição direta do problema e ação recomendada.
@@ -186,7 +191,7 @@ O diagnóstico completo verifica, entre outros pontos:
 - serviços inativos ou desabilitados no boot;
 - portas VNC, noVNC e HTTPS;
 - exposição insegura das portas 5901 ou 6080;
-- Chrome/Chromium parado;
+- serviço do navegador parado, processo do Chrome/Chromium ausente e última mensagem real do journal;
 - mudança do IP público;
 - erros na configuração do Nginx;
 - certificado ausente, inválido, vencido ou perto de vencer;
@@ -254,6 +259,7 @@ O certificado por IP é autoassinado. O navegador poderá exibir um aviso de seg
 | TCP 80 | domínio e Let's Encrypt | somente com domínio |
 | TCP 5901 | VNC interno | ❌ |
 | TCP 6080 | noVNC interno | ❌ |
+| TCP 9222 | diagnóstico local do WhatsApp/Chrome | ❌ |
 
 > ☁️ Na Oracle Cloud, libere TCP 443 no **NSG** ou na **Security List**. A VPS não consegue verificar automaticamente o firewall externo do provedor.
 
@@ -271,6 +277,24 @@ O certificado por IP é autoassinado. O navegador poderá exibir um aviso de seg
 
 O perfil fica salvo e é reutilizado após reinicializações da VPS.
 
+### ✅ Verificar se o WhatsApp está conectado
+
+No menu principal, o estado aparece automaticamente. Também é possível executar:
+
+```bash
+sudo whatsapp-remote whatsapp-status
+```
+
+Estados possíveis:
+
+- **Sessão conectada:** a lista de conversas foi detectada;
+- **Aguardando leitura do QR Code:** o aparelho ainda precisa ser vinculado;
+- **WhatsApp Web carregando:** aguarde alguns segundos;
+- **Sessão aberta, mas sem conexão:** o site abriu, porém está offline;
+- **Estado não confirmado:** a interface mudou ou ainda não terminou de carregar.
+
+A verificação é feita **localmente**, pela porta `127.0.0.1:9222`, sem enviar conteúdo da sessão para serviços externos. Como a interface do WhatsApp Web pode mudar, o resultado é uma detecção inteligente e não uma API oficial.
+
 ---
 
 ## 🛠️ Reparação automática
@@ -282,6 +306,9 @@ A reparação preserva o perfil do navegador e a sessão do WhatsApp. Ela recria
 - arquivos de senha;
 - configuração do Openbox;
 - scripts de inicialização;
+- serviço systemd dedicado do navegador, separado do Openbox;
+- recuperação de travas antigas do perfil do Chrome;
+- escolha automática do perfil persistente mais completo encontrado;
 - serviços systemd;
 - padrões móveis do noVNC;
 - comandos `menu` e `whatsapp-remote`;
@@ -355,6 +382,7 @@ sudo whatsapp-remote repair
 sudo whatsapp-remote update
 sudo whatsapp-remote reinstall
 sudo whatsapp-remote logs
+sudo whatsapp-remote whatsapp-status
 sudo whatsapp-remote uninstall
 ```
 
@@ -364,6 +392,7 @@ sudo whatsapp-remote uninstall
 
 ```bash
 journalctl -u whatsapp-desktop.service -n 100 --no-pager
+journalctl -u whatsapp-browser.service -n 100 --no-pager
 journalctl -u whatsapp-novnc.service -n 100 --no-pager
 journalctl -u nginx -n 100 --no-pager
 tail -n 120 /var/log/whatsapp-remote-install.log
@@ -403,7 +432,7 @@ Arquivos instalados:
 
 ## 🛡️ Segurança
 
-- VNC e noVNC devem escutar somente em `127.0.0.1`;
+- VNC, noVNC e a porta de diagnóstico `9222` devem escutar somente em `127.0.0.1`;
 - o acesso público passa pelo Nginx em HTTPS;
 - a autenticação web utiliza `htpasswd` com bcrypt;
 - as credenciais ficam disponíveis somente para `root`;
@@ -436,11 +465,20 @@ sudo whatsapp-remote repair
 
 ### O WhatsApp Web não está rodando
 
-No diagnóstico, confirme se **Chrome/Chromium** aparece como ativo. Depois:
+A versão 2.5.0 usa um serviço exclusivo para o navegador. Verifique:
 
 ```bash
-sudo whatsapp-remote restart
+sudo systemctl status whatsapp-browser.service --no-pager
+sudo journalctl -u whatsapp-browser.service -n 100 --no-pager
 ```
+
+Depois execute:
+
+```bash
+sudo whatsapp-remote repair
+```
+
+O reparo agora procura automaticamente perfis antigos como `.config/google-chrome-whatsapp`, remove travas deixadas por encerramentos anormais e mostra a última mensagem real do navegador caso ele ainda não inicie.
 
 ### O IP da VPS mudou
 

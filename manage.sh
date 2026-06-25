@@ -33,13 +33,16 @@ confirm_action() {
 
 manager_dashboard() {
   load_config
-  local d n w ip private_ip browser mem swap disk load_text
+  local d b n w ip private_ip browser whatsapp_raw whatsapp_message mem swap disk load_text
   d="$(systemctl is-active "$SERVICE_DESKTOP" 2>/dev/null || true)"
+  b="$(systemctl is-active "$SERVICE_BROWSER" 2>/dev/null || true)"
   n="$(systemctl is-active "$SERVICE_NOVNC" 2>/dev/null || true)"
   w="$(systemctl is-active nginx 2>/dev/null || true)"
   ip="$(detect_public_ip || true)"
   private_ip="$(detect_private_ip || true)"
   browser="$(browser_is_running && echo ativo || echo inativo)"
+  whatsapp_raw="$(whatsapp_session_status || true)"
+  whatsapp_message="${whatsapp_raw#*|}"
   mem="$(free -h | awk '/Mem:/ {print $3 "/" $2 " (livre " $7 ")"}')"
   swap="$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
   disk="$(df -h / | awk 'NR==2 {print $4}')"
@@ -48,7 +51,8 @@ manager_dashboard() {
   printf ' URL:          %s\n' "$(access_url)"
   printf ' IP público:   %s | IP privado: %s\n' "${ip:-não detectado}" "${private_ip:-não detectado}"
   printf ' Sistema:      %s %s (%s) | Kernel: %s\n' "$OS_ID" "$OS_VERSION" "$ARCH" "$(uname -r 2>/dev/null || echo '?')"
-  printf ' Serviços:     Desktop %s | noVNC %s | Nginx %s | Navegador %s\n' "$d" "$n" "$w" "$browser"
+  printf ' Serviços:     Desktop %s | Browser %s | noVNC %s | Nginx %s | Processo %s\n' "$d" "$b" "$n" "$w" "$browser"
+  printf ' WhatsApp:     %s\n' "${whatsapp_message:-estado não confirmado}"
   printf ' Recursos:     RAM %s | Swap %s | Disco %s | Carga %s\n' "$mem" "$swap" "$disk" "${load_text:-?}"
   echo
   show_health_summary compact || true
@@ -103,7 +107,7 @@ change_desktop_user() {
   confirm_action "Confirmar a alteração de '$old_user' para '$new_user'?" || return 0
 
   backup_current_config
-  systemctl stop "$SERVICE_NOVNC" "$SERVICE_DESKTOP" 2>/dev/null || true
+  systemctl stop "$SERVICE_NOVNC" "$SERVICE_BROWSER" "$SERVICE_DESKTOP" 2>/dev/null || true
   pkill -KILL -u "$old_user" 2>/dev/null || true
   sleep 1
   usermod -l "$new_user" "$old_user"
@@ -123,7 +127,7 @@ change_desktop_user() {
   render_openbox_config
   render_systemd_units
   configure_novnc_mobile_defaults
-  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null
+  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" >/dev/null
   restart_stack
   write_credentials_file "" ""
   ok "Usuário alterado de $old_user para $APP_USER."
@@ -242,6 +246,8 @@ repair_installation() {
   APP_GROUP="$(id -gn "$APP_USER")"
   APP_UID="$(id -u "$APP_USER")"
   APP_GID="$(id -g "$APP_USER")"
+  CDP_PORT="${CDP_PORT:-9222}"
+  recover_profile_dir
   install -d -m 700 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME/.vnc" "$PROFILE_DIR"
   install -d -m 755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME/.config/openbox"
 
@@ -269,12 +275,17 @@ repair_installation() {
   configure_novnc_mobile_defaults
   render_systemd_units
   install_menu_command
-  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx >/dev/null
+  systemctl enable "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" nginx >/dev/null
   nginx -t
   restart_stack
   write_credentials_file "$generated_vnc" "$generated_web"
-  ok "Reparação concluída."
+  if browser_is_running; then
+    ok "Reparação concluída; navegador iniciado e supervisionado pelo systemd."
+  else
+    warn "A reparação foi aplicada, mas o navegador não iniciou. O erro real será mostrado no diagnóstico abaixo."
+  fi
   show_status
+  return 0
 }
 
 update_from_github() {
@@ -305,21 +316,25 @@ show_logs_menu() {
   while true; do
     ui_header "Logs e diagnóstico"
     echo "  1) Desktop/VNC — últimas 100 linhas"
-    echo "  2) noVNC — últimas 100 linhas"
-    echo "  3) Nginx — últimas 100 linhas"
-    echo "  4) Instalação — últimas 120 linhas"
-    echo "  5) Acompanhar Desktop/VNC ao vivo (Ctrl+C para sair)"
-    echo "  6) Acompanhar noVNC ao vivo (Ctrl+C para sair)"
+    echo "  2) Navegador/Chrome — últimas 100 linhas"
+    echo "  3) noVNC — últimas 100 linhas"
+    echo "  4) Nginx — últimas 100 linhas"
+    echo "  5) Instalação — últimas 120 linhas"
+    echo "  6) Acompanhar navegador ao vivo (Ctrl+C para sair)"
+    echo "  7) Acompanhar Desktop/VNC ao vivo (Ctrl+C para sair)"
+    echo "  8) Verificar conexão atual do WhatsApp"
     echo "  0) Voltar"
     echo
     read -r -p "Escolha: " choice
     case "$choice" in
       1) journalctl -u "$SERVICE_DESKTOP" -n 100 --no-pager; ui_pause ;;
-      2) journalctl -u "$SERVICE_NOVNC" -n 100 --no-pager; ui_pause ;;
-      3) journalctl -u nginx -n 100 --no-pager; ui_pause ;;
-      4) tail -n 120 "$INSTALL_LOG" 2>/dev/null || warn "Log não encontrado."; ui_pause ;;
-      5) journalctl -u "$SERVICE_DESKTOP" -f || true ;;
-      6) journalctl -u "$SERVICE_NOVNC" -f || true ;;
+      2) journalctl -u "$SERVICE_BROWSER" -n 100 --no-pager; ui_pause ;;
+      3) journalctl -u "$SERVICE_NOVNC" -n 100 --no-pager; ui_pause ;;
+      4) journalctl -u nginx -n 100 --no-pager; ui_pause ;;
+      5) tail -n 120 "$INSTALL_LOG" 2>/dev/null || warn "Log não encontrado."; ui_pause ;;
+      6) journalctl -u "$SERVICE_BROWSER" -f || true ;;
+      7) journalctl -u "$SERVICE_DESKTOP" -f || true ;;
+      8) load_config; echo "WhatsApp Web: $(whatsapp_status_message)"; ui_pause ;;
       0) return 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -368,7 +383,7 @@ service_menu() {
     manager_dashboard
     echo
     echo "  1) Iniciar todos"
-    echo "  2) Parar desktop e noVNC"
+    echo "  2) Parar desktop, navegador e noVNC"
     echo "  3) Reiniciar todos"
     echo "  4) Ativar inicialização automática"
     echo "  5) Desativar inicialização automática"
@@ -379,8 +394,8 @@ service_menu() {
       1) load_config; start_stack && ok "Serviços iniciados." || warn "Falha ao iniciar; consulte os logs."; ui_pause ;;
       2) load_config; confirm_action "Parar o acesso remoto agora?" && { stop_stack; ok "Desktop e noVNC parados."; }; ui_pause ;;
       3) load_config; restart_stack; ok "Serviços reiniciados."; ui_pause ;;
-      4) systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx >/dev/null; ok "Inicialização automática ativada."; ui_pause ;;
-      5) confirm_action "Desativar a inicialização automática?" && { systemctl disable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" >/dev/null; ok "Inicialização automática desativada."; }; ui_pause ;;
+      4) systemctl enable "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" nginx >/dev/null; ok "Inicialização automática ativada."; ui_pause ;;
+      5) confirm_action "Desativar a inicialização automática?" && { systemctl disable "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" >/dev/null; ok "Inicialização automática desativada."; }; ui_pause ;;
       0) return 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -450,12 +465,13 @@ main_menu() {
     echo "  5) Alterar resolução"
     echo "  6) Configurar IP ou domínio"
     echo "  7) Iniciar, parar ou reiniciar serviços"
-    echo "  8) Status e diagnóstico completo"
+    echo "  8) Status, diagnóstico e conexão do WhatsApp"
     echo "  9) Reparação automática"
     echo " 10) Atualizar/reparar pelo GitHub"
     echo " 11) Ver logs e diagnóstico"
     echo " 12) Reinstalar tudo do zero"
     echo " 13) Desinstalar"
+    echo " 14) Verificar conexão do WhatsApp Web"
     echo "  0) Sair"
     echo
     read -r -p "Escolha: " option
@@ -473,6 +489,7 @@ main_menu() {
       11) show_logs_menu ;;
       12) reinstall_from_scratch ;;
       13) run_uninstall ;;
+      14) load_config; ui_header "Conexão do WhatsApp Web"; echo "Status: $(whatsapp_status_message)"; echo; echo "Observação: a detecção é local e não envia dados da sessão para serviços externos."; ui_pause ;;
       0) exit 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -501,6 +518,7 @@ Comandos:
   update               Atualiza/repara pelo GitHub
   logs                 Abre o menu de logs
   reinstall            Reinstala tudo do zero e apaga a sessão do WhatsApp
+  whatsapp-status      Verifica se a sessão está conectada, aguardando QR ou offline
   uninstall            Abre o desinstalador
   help                 Exibe esta ajuda
 HELP
@@ -522,6 +540,7 @@ case "${1:-menu}" in
   repair) repair_installation ;;
   update) update_from_github ;;
   logs) show_logs_menu ;;
+  whatsapp-status) load_config; echo "$(whatsapp_status_message)" ;;
   reinstall) reinstall_from_scratch ;;
   uninstall) run_uninstall ;;
   help|-h|--help) help_text ;;
