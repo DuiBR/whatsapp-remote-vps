@@ -2,7 +2,7 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.5.0"
+PROJECT_VERSION="2.5.1"
 GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
 GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
@@ -20,6 +20,9 @@ HTPASSWD_FILE="/etc/nginx/.htpasswd-whatsapp"
 SSL_DIR="/etc/nginx/ssl-whatsapp"
 MENU_COMMAND="/usr/local/bin/menu"
 WHATSAPP_STATUS_HELPER="/usr/local/bin/whatsapp-session-status"
+BROWSER_LOG_DIR="/var/log/whatsapp-remote"
+BROWSER_LOG_FILE="${BROWSER_LOG_DIR}/browser.log"
+BROWSER_STATE_FILE=""
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
   C_RESET=$'\033[0m'
@@ -302,6 +305,7 @@ load_config() {
   : "${PROFILE_DIR:=${APP_HOME}/.config/chrome-whatsapp}"
   : "${APP_UID:?APP_UID ausente}"
   : "${APP_GID:?APP_GID ausente}"
+  BROWSER_STATE_FILE="/run/user/${APP_UID}/whatsapp-remote-browser.state"
   : "${APP_USER_MANAGED:=0}"
   : "${DISPLAY_NUMBER:=1}"
   : "${GEOMETRY:=1280x720}"
@@ -311,6 +315,8 @@ load_config() {
   : "${BROWSER_BIN:?BROWSER_BIN ausente}"
   : "${BROWSER_TYPE:=chromium}"
   : "${LOW_RAM:=0}"
+  : "${BROWSER_SANDBOX_MODE:=auto}"
+  : "${ALLOW_UNSANDBOXED_FALLBACK:=0}"
   : "${ACCESS_MODE:=ip}"
   : "${PUBLIC_IP:=}"
   : "${DOMAIN:=}"
@@ -342,6 +348,8 @@ save_config() {
     printf 'BROWSER_BIN=%q\n' "$BROWSER_BIN"
     printf 'BROWSER_TYPE=%q\n' "$BROWSER_TYPE"
     printf 'LOW_RAM=%q\n' "$LOW_RAM"
+    printf 'BROWSER_SANDBOX_MODE=%q\n' "${BROWSER_SANDBOX_MODE:-auto}"
+    printf 'ALLOW_UNSANDBOXED_FALLBACK=%q\n' "${ALLOW_UNSANDBOXED_FALLBACK:-0}"
     printf 'ACCESS_MODE=%q\n' "$ACCESS_MODE"
     printf 'PUBLIC_IP=%q\n' "$PUBLIC_IP"
     printf 'DOMAIN=%q\n' "$DOMAIN"
@@ -620,15 +628,65 @@ exec dbus-run-session -- openbox-session
 SCRIPT
   chmod 755 /usr/local/bin/whatsapp-desktop-start
 
+  cat > /usr/local/sbin/whatsapp-browser-preflight <<'SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+source /etc/whatsapp-remote/config.env
+
+LOG_DIR="/var/log/whatsapp-remote"
+LOG_FILE="$LOG_DIR/browser.log"
+RUNTIME_DIR="/run/user/${APP_UID}"
+
+install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$LOG_DIR"
+touch "$LOG_FILE"
+chown "$APP_USER:$APP_GROUP" "$LOG_FILE"
+chmod 0640 "$LOG_FILE"
+install -d -m 0700 -o "$APP_UID" -g "$APP_GID" "$RUNTIME_DIR"
+install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" "$PROFILE_DIR"
+
+chmod 1777 /tmp 2>/dev/null || true
+[[ -d /dev/shm ]] && chmod 1777 /dev/shm 2>/dev/null || true
+
+if command -v dbus-uuidgen >/dev/null 2>&1; then
+  dbus-uuidgen --ensure=/etc/machine-id >/dev/null 2>&1 || true
+  install -d -m 0755 /var/lib/dbus
+  if [[ -s /etc/machine-id && ! -e /var/lib/dbus/machine-id ]]; then
+    ln -s /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null || cp -f /etc/machine-id /var/lib/dbus/machine-id
+  fi
+fi
+
+REAL_BROWSER="$(readlink -f "$BROWSER_BIN" 2>/dev/null || printf '%s' "$BROWSER_BIN")"
+for SANDBOX in \
+  "$(dirname "$REAL_BROWSER")/chrome-sandbox" \
+  /opt/google/chrome/chrome-sandbox \
+  /usr/lib/chromium/chrome-sandbox \
+  /usr/lib/chromium-browser/chrome-sandbox; do
+  [[ -f "$SANDBOX" ]] || continue
+  chown root:root "$SANDBOX" 2>/dev/null || true
+  chmod 4755 "$SANDBOX" 2>/dev/null || true
+  break
+done
+
+rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie" 2>/dev/null || true
+chown "$APP_USER:$APP_GROUP" "$PROFILE_DIR" "$LOG_DIR" "$LOG_FILE" 2>/dev/null || true
+SCRIPT
+  chmod 755 /usr/local/sbin/whatsapp-browser-preflight
+
   cat > /usr/local/bin/whatsapp-browser <<'SCRIPT'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+ulimit -c 0 2>/dev/null || true
 source /etc/whatsapp-remote/config.env
 export HOME="$APP_HOME"
 export USER="$APP_USER"
 export LOGNAME="$APP_USER"
 export DISPLAY=":${DISPLAY_NUMBER}"
 export XDG_RUNTIME_DIR="/run/user/${APP_UID}"
+export XDG_CONFIG_HOME="$APP_HOME/.config"
+
+LOG_DIR="/var/log/whatsapp-remote"
+LOG_FILE="$LOG_DIR/browser.log"
+STATE_FILE="/run/user/${APP_UID}/whatsapp-remote-browser.state"
 
 for _ in $(seq 1 120); do
   DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 && break
@@ -650,6 +708,10 @@ COMMON_FLAGS=(
   --disable-extensions
   --disable-sync
   --disable-background-mode
+  --disable-breakpad
+  --disable-crash-reporter
+  --noerrdialogs
+  --ozone-platform=x11
   --disable-features=Translate,MediaRouter
   --remote-debugging-address=127.0.0.1
   --remote-debugging-port="${CDP_PORT:-9222}"
@@ -657,9 +719,75 @@ COMMON_FLAGS=(
   --start-maximized
 )
 if [[ "$LOW_RAM" == "1" ]]; then
-  COMMON_FLAGS+=(--process-per-site --renderer-process-limit=3)
+  COMMON_FLAGS+=(--process-per-site --renderer-process-limit=2 "--js-flags=--max-old-space-size=256")
 fi
-exec "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "https://web.whatsapp.com/"
+
+write_state() {
+  local mode="$1" status="$2" detail="${3:-}"
+  umask 022
+  printf 'mode=%s\nstatus=%s\ndetail=%s\nupdated=%s\n' "$mode" "$status" "$detail" "$(date -Is)" > "$STATE_FILE"
+}
+
+run_mode() {
+  local mode="$1" start rc elapsed
+  local sandbox_flags=()
+  case "$mode" in
+    secure) ;;
+    userns) sandbox_flags+=(--disable-setuid-sandbox) ;;
+    none) sandbox_flags+=(--no-sandbox) ;;
+    *) echo "Modo de sandbox inválido: $mode"; return 64 ;;
+  esac
+
+  write_state "$mode" starting
+  {
+    echo
+    echo "===== $(date -Is) | iniciando navegador | sandbox=$mode ====="
+    echo "Binário: $BROWSER_BIN"
+    echo "Perfil:  $PROFILE_DIR"
+  } >> "$LOG_FILE"
+
+  start="$(date +%s)"
+  set +e
+  dbus-run-session -- "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "${sandbox_flags[@]}" "https://web.whatsapp.com/" \
+    > >(tee -a "$LOG_FILE") 2>&1
+  rc=$?
+  set -e
+  elapsed=$(( $(date +%s) - start ))
+  write_state "$mode" exited "rc=$rc elapsed=${elapsed}s"
+  printf 'Navegador encerrou: modo=%s rc=%s duração=%ss\n' "$mode" "$rc" "$elapsed" | tee -a "$LOG_FILE"
+  LAST_ELAPSED="$elapsed"
+  return "$rc"
+}
+
+requested="${BROWSER_SANDBOX_MODE:-auto}"
+case "$requested" in
+  secure|userns|none)
+    if [[ "$requested" == "none" && "${ALLOW_UNSANDBOXED_FALLBACK:-0}" != "1" ]]; then
+      echo "Modo sem sandbox bloqueado. Defina ALLOW_UNSANDBOXED_FALLBACK=1 somente em emergência." | tee -a "$LOG_FILE"
+      exit 78
+    fi
+    run_mode "$requested"
+    exit $?
+    ;;
+  auto) ;;
+  *) echo "BROWSER_SANDBOX_MODE inválido: $requested" | tee -a "$LOG_FILE"; exit 64 ;;
+esac
+
+if run_mode secure; then exit 0; else secure_rc=$?; fi
+if (( ${LAST_ELAPSED:-0} >= 20 )); then exit "$secure_rc"; fi
+
+echo "Tentativa segura falhou rapidamente; testando sandbox por user namespace." | tee -a "$LOG_FILE"
+if run_mode userns; then exit 0; else userns_rc=$?; fi
+if (( ${LAST_ELAPSED:-0} >= 20 )); then exit "$userns_rc"; fi
+
+if [[ "${ALLOW_UNSANDBOXED_FALLBACK:-0}" == "1" ]]; then
+  echo "AVISO: iniciando em modo emergencial sem sandbox." | tee -a "$LOG_FILE"
+  run_mode none
+  exit $?
+fi
+
+echo "Todas as tentativas protegidas falharam. Consulte $LOG_FILE." | tee -a "$LOG_FILE"
+exit "$userns_rc"
 SCRIPT
   chmod 755 /usr/local/bin/whatsapp-browser
 
@@ -907,6 +1035,7 @@ Environment=USER=${APP_USER}
 Environment=LOGNAME=${APP_USER}
 Environment=DISPLAY=:${DISPLAY_NUMBER}
 Environment=XDG_RUNTIME_DIR=/run/user/${APP_UID}
+ExecStartPre=+/usr/local/sbin/whatsapp-browser-preflight
 ExecStart=/usr/local/bin/whatsapp-browser
 Restart=always
 RestartSec=5
@@ -914,6 +1043,7 @@ TimeoutStartSec=90
 TimeoutStopSec=30
 KillMode=control-group
 OOMScoreAdjust=-350
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target
@@ -1090,14 +1220,68 @@ wait_for_browser() {
 }
 
 browser_failure_detail() {
-  local message result
+  local message result file_message core_message
   result="$(systemctl show "$SERVICE_BROWSER" -p Result --value 2>/dev/null || true)"
-  message="$(journalctl -u "$SERVICE_BROWSER" -n 25 --no-pager -o cat 2>/dev/null     | sed '/^[[:space:]]*$/d' | tail -n 1 | tr '\n' ' ' | cut -c1-220 || true)"
-  if [[ -n "$message" ]]; then
+  file_message="$(tail -n 80 "$BROWSER_LOG_FILE" 2>/dev/null \
+    | grep -Eai 'FATAL|ERROR|sandbox|zygote|namespace|permission denied|trace/breakpoint|segmentation|core' \
+    | tail -n 1 | tr '\n' ' ' | cut -c1-240 || true)"
+  message="$(journalctl -u "$SERVICE_BROWSER" -n 35 --no-pager -o cat 2>/dev/null \
+    | grep -Ev '^[[:space:]]*$|Scheduled restart job|Stopped |Started ' \
+    | tail -n 1 | tr '\n' ' ' | cut -c1-220 || true)"
+  core_message="$(coredumpctl info "$BROWSER_BIN" --no-pager 2>/dev/null \
+    | grep -E 'Signal:|Command Line:|Message:' | tail -n 2 | tr '\n' ' ' | cut -c1-220 || true)"
+  if [[ -n "$file_message" ]]; then
+    printf 'resultado=%s; %s' "${result:-desconhecido}" "$file_message"
+  elif [[ -n "$message" ]]; then
     printf 'resultado=%s; %s' "${result:-desconhecido}" "$message"
+  elif [[ -n "$core_message" ]]; then
+    printf 'resultado=%s; %s' "${result:-desconhecido}" "$core_message"
   else
-    printf 'resultado=%s; consulte: journalctl -u %s -n 100' "${result:-desconhecido}" "$SERVICE_BROWSER"
+    printf 'resultado=%s; consulte %s e journalctl -u %s -n 100' "${result:-desconhecido}" "$BROWSER_LOG_FILE" "$SERVICE_BROWSER"
   fi
+}
+browser_sandbox_helper() {
+  local real candidate
+  real="$(readlink -f "$BROWSER_BIN" 2>/dev/null || printf '%s' "$BROWSER_BIN")"
+  for candidate in \
+    "$(dirname "$real")/chrome-sandbox" \
+    /opt/google/chrome/chrome-sandbox \
+    /usr/lib/chromium/chrome-sandbox \
+    /usr/lib/chromium-browser/chrome-sandbox; do
+    [[ -f "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+browser_sandbox_mode_active() {
+  if [[ -r "$BROWSER_STATE_FILE" ]]; then
+    awk -F= '$1=="mode" {print $2; exit}' "$BROWSER_STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+browser_sandbox_status() {
+  local mode helper owner perms mount_opts
+  mode="$(browser_sandbox_mode_active)"
+  helper="$(browser_sandbox_helper || true)"
+  case "$mode" in
+    secure) printf 'protegido (sandbox padrão)' ;;
+    userns) printf 'protegido por user namespace (fallback automático)' ;;
+    none) printf 'SEM SANDBOX — modo emergencial' ;;
+    *)
+      if [[ -n "$helper" ]]; then
+        owner="$(stat -c '%U:%G' "$helper" 2>/dev/null || true)"
+        perms="$(stat -c '%a' "$helper" 2>/dev/null || true)"
+        mount_opts="$(findmnt -no OPTIONS -T "$helper" 2>/dev/null || true)"
+        if [[ "$owner" == "root:root" && "$perms" == "4755" && "$mount_opts" != *nosuid* ]]; then
+          printf 'preparado (helper SUID válido)'
+        else
+          printf 'incompatível (helper=%s permissão=%s mount=%s)' "${owner:-?}" "${perms:-?}" "${mount_opts:-?}"
+        fi
+      else
+        printf 'não confirmado'
+      fi
+      ;;
+  esac
 }
 
 whatsapp_session_status() {
@@ -1119,6 +1303,7 @@ whatsapp_status_message() {
 }
 
 restart_stack() {
+  [[ -x /usr/local/sbin/whatsapp-browser-preflight ]] && /usr/local/sbin/whatsapp-browser-preflight || true
   systemctl stop "$SERVICE_NOVNC" "$SERVICE_BROWSER" 2>/dev/null || true
   systemctl restart "$SERVICE_DESKTOP"
   wait_port 127.0.0.1 "$VNC_PORT" 60 || {
@@ -1139,6 +1324,7 @@ restart_stack() {
 }
 
 start_stack() {
+  [[ -x /usr/local/sbin/whatsapp-browser-preflight ]] && /usr/local/sbin/whatsapp-browser-preflight || true
   systemctl start "$SERVICE_DESKTOP"
   wait_port 127.0.0.1 "$VNC_PORT" 60 || return 1
   systemctl start "$SERVICE_BROWSER"
@@ -1221,6 +1407,7 @@ collect_health_issues() {
   [[ -x "$BROWSER_BIN" ]] || health_error "Navegador configurado não foi encontrado ou não é executável: $BROWSER_BIN"
   [[ -x /usr/local/bin/whatsapp-desktop-start ]] || health_error "Inicializador do desktop está ausente."
   [[ -x /usr/local/bin/whatsapp-browser ]] || health_error "Inicializador do navegador está ausente."
+  [[ -x /usr/local/sbin/whatsapp-browser-preflight ]] || health_error "Preflight de compatibilidade do navegador está ausente."
   [[ -x "$WHATSAPP_STATUS_HELPER" ]] || health_warning "Verificador da sessão do WhatsApp está ausente; a reparação pode recriá-lo."
   [[ -x /usr/local/sbin/whatsapp-remote ]] || health_warning "Comando 'whatsapp-remote' ausente; a reparação pode recriá-lo."
   [[ -x "$MENU_COMMAND" ]] || health_warning "Comando global 'menu' ausente; a reparação pode recriá-lo."
@@ -1255,6 +1442,10 @@ collect_health_issues() {
   if ! browser_is_running; then
     health_error "Chrome/Chromium não está em execução ($(browser_failure_detail))."
   else
+    local active_sandbox
+    active_sandbox="$(browser_sandbox_mode_active)"
+    [[ "$active_sandbox" == "none" ]] && health_error "O navegador está funcionando SEM sandbox. Use Reparar navegador para restaurar a proteção."
+    [[ "$active_sandbox" == "userns" ]] && health_warning "O navegador usa fallback por user namespace porque o helper SUID não iniciou corretamente."
     local whatsapp_raw whatsapp_code whatsapp_message
     whatsapp_raw="$(whatsapp_session_status || true)"
     whatsapp_code="${whatsapp_raw%%|*}"
@@ -1384,6 +1575,8 @@ show_status() {
   printf '%-29s %b\n' "Porta noVNC ${NOVNC_PORT}:" "$(port_badge "$NOVNC_PORT")"
   printf '%-29s %b\n' "Porta HTTPS 443:" "$(port_badge 443)"
   printf '%-29s %s\n' "Chrome/Chromium:" "$browser_state"
+  printf '%-29s %s\n' "Sandbox do navegador:" "$(browser_sandbox_status)"
+  printf '%-29s %s\n' "Log do navegador:" "$BROWSER_LOG_FILE"
   printf '%-29s %s\n' "WhatsApp Web:" "${whatsapp_message:-estado não confirmado}"
   printf '%-29s %s\n' "Inicialização automática:" "$auto_start"
   printf '%-29s %s\n' "Memória usada/total:" "$(free -h | awk '/Mem:/ {print $3 "/" $2 " (disponível " $7 ")"}')"
