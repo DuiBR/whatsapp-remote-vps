@@ -2,7 +2,7 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.4.0"
+PROJECT_VERSION="2.5.0"
 GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
 GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
@@ -12,12 +12,14 @@ CONFIG_BACKUP_DIR="/var/backups/whatsapp-remote"
 CREDENTIALS_FILE="/root/whatsapp-remote-credentials.txt"
 INSTALL_LOG="/var/log/whatsapp-remote-install.log"
 SERVICE_DESKTOP="whatsapp-desktop.service"
+SERVICE_BROWSER="whatsapp-browser.service"
 SERVICE_NOVNC="whatsapp-novnc.service"
 NGINX_SITE="/etc/nginx/sites-available/whatsapp-remote"
 NGINX_LINK="/etc/nginx/sites-enabled/whatsapp-remote"
 HTPASSWD_FILE="/etc/nginx/.htpasswd-whatsapp"
 SSL_DIR="/etc/nginx/ssl-whatsapp"
 MENU_COMMAND="/usr/local/bin/menu"
+WHATSAPP_STATUS_HELPER="/usr/local/bin/whatsapp-session-status"
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
   C_RESET=$'\033[0m'
@@ -305,6 +307,7 @@ load_config() {
   : "${GEOMETRY:=1280x720}"
   : "${VNC_PORT:=$((5900 + DISPLAY_NUMBER))}"
   : "${NOVNC_PORT:=6080}"
+  : "${CDP_PORT:=9222}"
   : "${BROWSER_BIN:?BROWSER_BIN ausente}"
   : "${BROWSER_TYPE:=chromium}"
   : "${LOW_RAM:=0}"
@@ -335,6 +338,7 @@ save_config() {
     printf 'GEOMETRY=%q\n' "$GEOMETRY"
     printf 'VNC_PORT=%q\n' "$VNC_PORT"
     printf 'NOVNC_PORT=%q\n' "$NOVNC_PORT"
+    printf 'CDP_PORT=%q\n' "${CDP_PORT:-9222}"
     printf 'BROWSER_BIN=%q\n' "$BROWSER_BIN"
     printf 'BROWSER_TYPE=%q\n' "$BROWSER_TYPE"
     printf 'LOW_RAM=%q\n' "$LOW_RAM"
@@ -509,6 +513,64 @@ JSON
   chmod 644 "$webroot/mandatory.json"
 }
 
+
+profile_dir_score() {
+  local path="$1" size_kb=0 score=0
+  [[ -d "$path" ]] || { printf '0'; return 0; }
+  size_kb="$(du -sk "$path" 2>/dev/null | awk '{print $1}' || echo 0)"
+  [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+  score="$size_kb"
+  [[ -f "$path/Local State" ]] && score=$((score + 100000))
+  [[ -d "$path/Default" ]] && score=$((score + 100000))
+  [[ -f "$path/Default/Cookies" || -f "$path/Default/Network/Cookies" ]] && score=$((score + 250000))
+  [[ -d "$path/Default/IndexedDB" ]] && score=$((score + 150000))
+  printf '%s' "$score"
+}
+
+recover_profile_dir() {
+  local configured="${PROFILE_DIR:-}" default_path candidate best="" best_score=-1 score
+  local candidates=()
+
+  if [[ "${BROWSER_TYPE:-}" == "Chromium Snap" ]]; then
+    default_path="$APP_HOME/snap/chromium/common/whatsapp-profile"
+  else
+    default_path="$APP_HOME/.config/chrome-whatsapp"
+  fi
+
+  [[ -n "$configured" ]] && candidates+=("$configured")
+  candidates+=(
+    "$APP_HOME/.config/google-chrome-whatsapp"
+    "$APP_HOME/.config/chrome-whatsapp"
+    "$APP_HOME/snap/chromium/common/whatsapp-profile"
+  )
+
+  local seen='|'
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    [[ "$seen" == *"|$candidate|"* ]] && continue
+    seen+="$candidate|"
+    score="$(profile_dir_score "$candidate")"
+    if (( score > best_score )); then
+      best="$candidate"
+      best_score="$score"
+    fi
+  done
+
+  if [[ -z "$best" || "$best_score" -le 0 ]]; then best="$default_path"; fi
+  if [[ -n "$configured" && "$configured" != "$best" ]]; then
+    local configured_score
+    configured_score="$(profile_dir_score "$configured")"
+    if (( best_score > configured_score )); then
+      warn "Perfil persistente mais completo encontrado em $best; ele será reutilizado para preservar a sessão do WhatsApp."
+    else
+      best="$configured"
+    fi
+  fi
+  PROFILE_DIR="$best"
+  install -d -m 700 -o "$APP_USER" -g "$APP_GROUP" "$PROFILE_DIR"
+  chown -R "$APP_USER:$APP_GROUP" "$PROFILE_DIR" 2>/dev/null || true
+}
+
 render_runtime_scripts() {
   cat > /usr/local/bin/whatsapp-desktop-start <<'SCRIPT'
 #!/usr/bin/env bash
@@ -549,7 +611,7 @@ XTIGERVNC="$(command -v Xtigervnc || command -v Xvnc || true)"
   -AcceptCutText &
 VNC_PID=$!
 
-for _ in $(seq 1 80); do
+for _ in $(seq 1 120); do
   DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 && break
   sleep 0.25
 done
@@ -560,13 +622,22 @@ SCRIPT
 
   cat > /usr/local/bin/whatsapp-browser <<'SCRIPT'
 #!/usr/bin/env bash
-set -u
+set -Eeuo pipefail
 source /etc/whatsapp-remote/config.env
 export HOME="$APP_HOME"
 export USER="$APP_USER"
 export LOGNAME="$APP_USER"
 export DISPLAY=":${DISPLAY_NUMBER}"
 export XDG_RUNTIME_DIR="/run/user/${APP_UID}"
+
+for _ in $(seq 1 120); do
+  DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 && break
+  sleep 0.5
+done
+DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 || { echo "Display :${DISPLAY_NUMBER} indisponível para o navegador."; exit 1; }
+
+install -d -m 700 "$PROFILE_DIR" "$XDG_RUNTIME_DIR"
+rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie" 2>/dev/null || true
 
 COMMON_FLAGS=(
   --user-data-dir="$PROFILE_DIR"
@@ -580,17 +651,202 @@ COMMON_FLAGS=(
   --disable-sync
   --disable-background-mode
   --disable-features=Translate,MediaRouter
+  --remote-debugging-address=127.0.0.1
+  --remote-debugging-port="${CDP_PORT:-9222}"
+  "--remote-allow-origins=*"
   --start-maximized
 )
 if [[ "$LOW_RAM" == "1" ]]; then
   COMMON_FLAGS+=(--process-per-site --renderer-process-limit=3)
 fi
-while true; do
-  "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "https://web.whatsapp.com/" || true
-  sleep 4
-done
+exec "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "https://web.whatsapp.com/"
 SCRIPT
   chmod 755 /usr/local/bin/whatsapp-browser
+
+  cat > "$WHATSAPP_STATUS_HELPER" <<'PYTHON'
+#!/usr/bin/env python3
+# Consulta localmente o Chrome DevTools e estima o estado do WhatsApp Web.
+import base64
+import hashlib
+import json
+import os
+import socket
+import struct
+import sys
+import urllib.parse
+import urllib.request
+
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 9222
+
+
+def emit(code: str, message: str) -> None:
+    print(f"{code}|{message}")
+
+
+def recv_exact(sock: socket.socket, length: int) -> bytes:
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise ConnectionError("WebSocket encerrado")
+        data += chunk
+    return data
+
+
+def send_frame(sock: socket.socket, payload: bytes, opcode: int = 1) -> None:
+    mask = os.urandom(4)
+    size = len(payload)
+    header = bytearray([0x80 | opcode])
+    if size < 126:
+        header.append(0x80 | size)
+    elif size < 65536:
+        header.append(0x80 | 126)
+        header.extend(struct.pack("!H", size))
+    else:
+        header.append(0x80 | 127)
+        header.extend(struct.pack("!Q", size))
+    header.extend(mask)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(bytes(header) + masked)
+
+
+def recv_message(sock: socket.socket) -> str:
+    fragments = []
+    while True:
+        first, second = recv_exact(sock, 2)
+        fin = bool(first & 0x80)
+        opcode = first & 0x0F
+        masked = bool(second & 0x80)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", recv_exact(sock, 2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", recv_exact(sock, 8))[0]
+        mask = recv_exact(sock, 4) if masked else b""
+        payload = recv_exact(sock, length) if length else b""
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        if opcode == 8:
+            raise ConnectionError("WebSocket fechado")
+        if opcode == 9:
+            send_frame(sock, payload, 10)
+            continue
+        if opcode in (0, 1):
+            fragments.append(payload)
+            if fin:
+                return b"".join(fragments).decode("utf-8", "replace")
+
+
+def websocket_eval(ws_url: str, expression: str):
+    parsed = urllib.parse.urlparse(ws_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    sock = socket.create_connection((host, port), timeout=2.5)
+    sock.settimeout(3.0)
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        f"Origin: http://127.0.0.1:{PORT}\r\n\r\n"
+    )
+    sock.sendall(request.encode())
+    response = b""
+    while b"\r\n\r\n" not in response and len(response) < 65536:
+        response += sock.recv(4096)
+    if b" 101 " not in response.split(b"\r\n", 1)[0]:
+        raise ConnectionError("Handshake DevTools recusado")
+    expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+    if expected.lower() not in response.decode("latin1", "ignore").lower():
+        raise ConnectionError("Resposta WebSocket inválida")
+    command = {
+        "id": 1,
+        "method": "Runtime.evaluate",
+        "params": {"expression": expression, "returnByValue": True, "awaitPromise": True},
+    }
+    send_frame(sock, json.dumps(command).encode())
+    while True:
+        message = json.loads(recv_message(sock))
+        if message.get("id") == 1:
+            sock.close()
+            return message.get("result", {}).get("result", {}).get("value", {})
+
+
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=2.0) as response:
+        pages = json.load(response)
+except Exception:
+    emit("BROWSER_UNAVAILABLE", "Navegador inativo ou diagnóstico local indisponível")
+    sys.exit(1)
+
+page = next((p for p in pages if p.get("type") == "page" and "web.whatsapp.com" in p.get("url", "")), None)
+if not page or not page.get("webSocketDebuggerUrl"):
+    emit("PAGE_UNAVAILABLE", "WhatsApp Web ainda não abriu")
+    sys.exit(2)
+
+expression = r'''(() => {
+  const visible = (el) => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const anyVisible = (selectors) => selectors.some((selector) => {
+    try { return Array.from(document.querySelectorAll(selector)).some(visible); } catch (_) { return false; }
+  });
+  const text = (document.body?.innerText || '').toLowerCase();
+  const connected = anyVisible([
+    '#pane-side',
+    '[data-testid="chat-list"]',
+    '[data-testid="chatlist-header"]',
+    '[aria-label="Chat list"]',
+    '[aria-label="Lista de conversas"]',
+    '[aria-label="Lista de chats"]'
+  ]);
+  const qr = anyVisible([
+    '[data-testid="qrcode"]',
+    'canvas[aria-label*="Scan"]',
+    'canvas[aria-label*="Escane"]',
+    'div[data-ref]'
+  ]) || [
+    'scan this qr code', 'escaneie este código qr', 'escaneie o código qr',
+    'use whatsapp on your computer', 'usar o whatsapp no seu computador',
+    'link with phone number', 'conectar com número de telefone'
+  ].some((term) => text.includes(term));
+  const offline = [
+    'computer not connected', 'computador não conectado', 'sem conexão',
+    'no internet connection', 'sem conexão com a internet', 'trying to reach phone',
+    'tentando conectar ao telefone', 'whatsapp is not available right now'
+  ].some((term) => text.includes(term));
+  return {
+    connected,
+    qr,
+    offline,
+    readyState: document.readyState,
+    title: document.title || '',
+    bodyPresent: !!document.body
+  };
+})()'''
+
+try:
+    state = websocket_eval(page["webSocketDebuggerUrl"], expression)
+except Exception:
+    emit("UNKNOWN", "WhatsApp Web aberto, mas não foi possível confirmar a sessão")
+    sys.exit(3)
+
+if state.get("offline"):
+    emit("OFFLINE", "Sessão aberta, mas o WhatsApp Web está sem conexão")
+elif state.get("connected"):
+    emit("CONNECTED", "Sessão conectada e interface de conversas carregada")
+elif state.get("qr"):
+    emit("QR_REQUIRED", "Aguardando leitura do QR Code")
+elif state.get("readyState") != "complete" or not state.get("bodyPresent"):
+    emit("LOADING", "WhatsApp Web carregando")
+else:
+    emit("UNKNOWN", "WhatsApp Web aberto; estado da sessão não confirmado")
+PYTHON
+  chmod 755 "$WHATSAPP_STATUS_HELPER"
 }
 
 render_openbox_config() {
@@ -598,7 +854,6 @@ render_openbox_config() {
   cat > "$APP_HOME/.config/openbox/autostart" <<'AUTOSTART'
 xset s off -dpms s noblank >/dev/null 2>&1 &
 tint2 >/dev/null 2>&1 &
-/usr/local/bin/whatsapp-browser >>"$HOME/whatsapp-browser.log" 2>&1 &
 AUTOSTART
   chown -R "$APP_USER:$APP_GROUP" "$APP_HOME/.config/openbox"
   chmod 755 "$APP_HOME/.config/openbox/autostart"
@@ -614,6 +869,7 @@ render_systemd_units() {
 Description=Desktop Openbox persistente para WhatsApp Web
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -625,10 +881,39 @@ ExecStartPre=+/usr/bin/install -d -m 0700 -o ${APP_UID} -g ${APP_GID} /run/user/
 ExecStart=/usr/local/bin/whatsapp-desktop-start
 Restart=always
 RestartSec=5
-TimeoutStartSec=60
+TimeoutStartSec=75
 TimeoutStopSec=25
 KillMode=control-group
 OOMScoreAdjust=-200
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+  cat > "/etc/systemd/system/$SERVICE_BROWSER" <<SERVICE
+[Unit]
+Description=Navegador persistente do WhatsApp Web
+After=network-online.target ${SERVICE_DESKTOP}
+Wants=network-online.target
+Requires=${SERVICE_DESKTOP}
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_GROUP}
+Environment=HOME=${APP_HOME}
+Environment=USER=${APP_USER}
+Environment=LOGNAME=${APP_USER}
+Environment=DISPLAY=:${DISPLAY_NUMBER}
+Environment=XDG_RUNTIME_DIR=/run/user/${APP_UID}
+ExecStart=/usr/local/bin/whatsapp-browser
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+KillMode=control-group
+OOMScoreAdjust=-350
 
 [Install]
 WantedBy=multi-user.target
@@ -640,6 +925,7 @@ Description=noVNC local para WhatsApp Web
 After=network-online.target ${SERVICE_DESKTOP}
 Wants=network-online.target
 Requires=${SERVICE_DESKTOP}
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -790,9 +1076,7 @@ wait_port() {
 }
 
 browser_is_running() {
-  pgrep -u "$APP_USER" -af 'chrome|chromium' 2>/dev/null \
-    | grep -v 'crashpad_handler' \
-    | grep -q -- '--user-data-dir='
+  pgrep -u "$APP_USER" -af 'chrome|chromium' 2>/dev/null     | grep -v 'crashpad_handler'     | grep -q -- '--user-data-dir='
 }
 
 wait_for_browser() {
@@ -805,33 +1089,67 @@ wait_for_browser() {
   return 1
 }
 
+browser_failure_detail() {
+  local message result
+  result="$(systemctl show "$SERVICE_BROWSER" -p Result --value 2>/dev/null || true)"
+  message="$(journalctl -u "$SERVICE_BROWSER" -n 25 --no-pager -o cat 2>/dev/null     | sed '/^[[:space:]]*$/d' | tail -n 1 | tr '\n' ' ' | cut -c1-220 || true)"
+  if [[ -n "$message" ]]; then
+    printf 'resultado=%s; %s' "${result:-desconhecido}" "$message"
+  else
+    printf 'resultado=%s; consulte: journalctl -u %s -n 100' "${result:-desconhecido}" "$SERVICE_BROWSER"
+  fi
+}
+
+whatsapp_session_status() {
+  if ! browser_is_running; then
+    printf '%s' 'BROWSER_UNAVAILABLE|Navegador inativo'
+    return 1
+  fi
+  if [[ ! -x "$WHATSAPP_STATUS_HELPER" ]]; then
+    printf '%s' 'UNKNOWN|Verificação da sessão ainda não instalada'
+    return 2
+  fi
+  "$WHATSAPP_STATUS_HELPER" "${CDP_PORT:-9222}" 2>/dev/null || true
+}
+
+whatsapp_status_message() {
+  local raw
+  raw="$(whatsapp_session_status || true)"
+  printf '%s' "${raw#*|}"
+}
+
 restart_stack() {
-  systemctl stop "$SERVICE_NOVNC" 2>/dev/null || true
+  systemctl stop "$SERVICE_NOVNC" "$SERVICE_BROWSER" 2>/dev/null || true
   systemctl restart "$SERVICE_DESKTOP"
   wait_port 127.0.0.1 "$VNC_PORT" 60 || {
     journalctl -u "$SERVICE_DESKTOP" -n 100 --no-pager >&2 || true
     die "A porta VNC ${VNC_PORT} não abriu."
   }
+  systemctl restart "$SERVICE_BROWSER"
+  if ! wait_for_browser 60; then
+    journalctl -u "$SERVICE_BROWSER" -n 80 --no-pager >&2 || true
+    warn "O navegador não iniciou: $(browser_failure_detail)"
+  fi
   systemctl restart "$SERVICE_NOVNC"
   wait_port 127.0.0.1 "$NOVNC_PORT" 45 || {
     journalctl -u "$SERVICE_NOVNC" -n 100 --no-pager >&2 || true
     die "A porta noVNC ${NOVNC_PORT} não abriu."
   }
   if command_exists nginx && nginx -t >/dev/null 2>&1; then systemctl restart nginx; fi
-  wait_for_browser 45 || warn "O navegador ainda não iniciou; consulte o diagnóstico e o log do desktop."
 }
 
 start_stack() {
   systemctl start "$SERVICE_DESKTOP"
   wait_port 127.0.0.1 "$VNC_PORT" 60 || return 1
+  systemctl start "$SERVICE_BROWSER"
+  wait_for_browser 60 || return 1
   systemctl start "$SERVICE_NOVNC"
   wait_port 127.0.0.1 "$NOVNC_PORT" 45 || return 1
   systemctl start nginx
-  wait_for_browser 45 || return 1
 }
 
 stop_stack() {
-  systemctl stop "$SERVICE_NOVNC" "$SERVICE_DESKTOP" 2>/dev/null || true
+  systemctl stop "$SERVICE_NOVNC" "$SERVICE_BROWSER" "$SERVICE_DESKTOP" 2>/dev/null || true
 }
 
 service_badge() {
@@ -903,6 +1221,7 @@ collect_health_issues() {
   [[ -x "$BROWSER_BIN" ]] || health_error "Navegador configurado não foi encontrado ou não é executável: $BROWSER_BIN"
   [[ -x /usr/local/bin/whatsapp-desktop-start ]] || health_error "Inicializador do desktop está ausente."
   [[ -x /usr/local/bin/whatsapp-browser ]] || health_error "Inicializador do navegador está ausente."
+  [[ -x "$WHATSAPP_STATUS_HELPER" ]] || health_warning "Verificador da sessão do WhatsApp está ausente; a reparação pode recriá-lo."
   [[ -x /usr/local/sbin/whatsapp-remote ]] || health_warning "Comando 'whatsapp-remote' ausente; a reparação pode recriá-lo."
   [[ -x "$MENU_COMMAND" ]] || health_warning "Comando global 'menu' ausente; a reparação pode recriá-lo."
 
@@ -916,7 +1235,7 @@ collect_health_issues() {
   fi
 
   local service
-  for service in "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx; do
+  for service in "$SERVICE_DESKTOP" "$SERVICE_BROWSER" "$SERVICE_NOVNC" nginx; do
     if ! systemctl is-active --quiet "$service" 2>/dev/null; then
       health_error "Serviço $service está inativo ($(service_failure_detail "$service"))."
     fi
@@ -930,9 +1249,24 @@ collect_health_issues() {
   port_is_listening 443 || health_error "Porta HTTPS 443 não está escutando."
   port_is_publicly_exposed "$VNC_PORT" && health_error "RISCO DE SEGURANÇA: a porta VNC $VNC_PORT está exposta fora do localhost."
   port_is_publicly_exposed "$NOVNC_PORT" && health_error "RISCO DE SEGURANÇA: a porta noVNC $NOVNC_PORT está exposta fora do localhost."
+  port_is_publicly_exposed "${CDP_PORT:-9222}" && health_error "RISCO DE SEGURANÇA: a porta de diagnóstico ${CDP_PORT:-9222} está exposta fora do localhost."
 
   nginx -t >/dev/null 2>&1 || health_error "A configuração do Nginx contém erro; execute 'nginx -t' para detalhes."
-  browser_is_running || health_error "Chrome/Chromium não está em execução; o WhatsApp Web não ficará ativo."
+  if ! browser_is_running; then
+    health_error "Chrome/Chromium não está em execução ($(browser_failure_detail))."
+  else
+    local whatsapp_raw whatsapp_code whatsapp_message
+    whatsapp_raw="$(whatsapp_session_status || true)"
+    whatsapp_code="${whatsapp_raw%%|*}"
+    whatsapp_message="${whatsapp_raw#*|}"
+    case "$whatsapp_code" in
+      CONNECTED) ;;
+      QR_REQUIRED) health_warning "$whatsapp_message; abra a URL remota e vincule o aparelho." ;;
+      OFFLINE) health_error "$whatsapp_message." ;;
+      LOADING|PAGE_UNAVAILABLE) health_warning "$whatsapp_message; aguarde alguns segundos." ;;
+      *) health_warning "$whatsapp_message." ;;
+    esac
+  fi
 
   if [[ "$ACCESS_MODE" == "ip" ]]; then
     cert_file="$SSL_DIR/whatsapp-ip.crt"
@@ -1011,13 +1345,16 @@ certificate_expiry_text() {
 
 show_status() {
   load_config
-  local current_ip private_ip uptime_text profile_size browser_state auto_start load_text cpu_count
+  local current_ip private_ip uptime_text profile_size browser_state auto_start load_text cpu_count whatsapp_raw whatsapp_message
   current_ip="$(detect_public_ip || true)"
   private_ip="$(detect_private_ip || true)"
   uptime_text="$(uptime -p 2>/dev/null || true)"
   profile_size="$(du -sh "$PROFILE_DIR" 2>/dev/null | awk '{print $1}' || true)"
   browser_state="$(browser_is_running && echo ativo || echo inativo)"
+  whatsapp_raw="$(whatsapp_session_status || true)"
+  whatsapp_message="${whatsapp_raw#*|}"
   if systemctl is-enabled --quiet "$SERVICE_DESKTOP" 2>/dev/null \
+    && systemctl is-enabled --quiet "$SERVICE_BROWSER" 2>/dev/null \
     && systemctl is-enabled --quiet "$SERVICE_NOVNC" 2>/dev/null \
     && systemctl is-enabled --quiet nginx 2>/dev/null; then auto_start="ativada"; else auto_start="incompleta"; fi
   load_text="$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || true)"
@@ -1040,12 +1377,14 @@ show_status() {
   printf '%-29s %s\n' "Resolução:" "$GEOMETRY"
   printf '%-29s %s\n' "Perfil do navegador:" "$PROFILE_DIR (${profile_size:-0B})"
   printf '%-29s %b\n' "Desktop/VNC:" "$(service_badge "$SERVICE_DESKTOP")"
+  printf '%-29s %b\n' "Serviço do navegador:" "$(service_badge "$SERVICE_BROWSER")"
   printf '%-29s %b\n' "noVNC:" "$(service_badge "$SERVICE_NOVNC")"
   printf '%-29s %b\n' "Nginx:" "$(service_badge nginx)"
   printf '%-29s %b\n' "Porta VNC ${VNC_PORT}:" "$(port_badge "$VNC_PORT")"
   printf '%-29s %b\n' "Porta noVNC ${NOVNC_PORT}:" "$(port_badge "$NOVNC_PORT")"
   printf '%-29s %b\n' "Porta HTTPS 443:" "$(port_badge 443)"
   printf '%-29s %s\n' "Chrome/Chromium:" "$browser_state"
+  printf '%-29s %s\n' "WhatsApp Web:" "${whatsapp_message:-estado não confirmado}"
   printf '%-29s %s\n' "Inicialização automática:" "$auto_start"
   printf '%-29s %s\n' "Memória usada/total:" "$(free -h | awk '/Mem:/ {print $3 "/" $2 " (disponível " $7 ")"}')"
   printf '%-29s %s\n' "Swap usada/total:" "$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
@@ -1060,6 +1399,7 @@ quick_healthcheck() {
   load_config
   local failures=0
   systemctl is-active --quiet "$SERVICE_DESKTOP" || failures=$((failures + 1))
+  systemctl is-active --quiet "$SERVICE_BROWSER" || failures=$((failures + 1))
   systemctl is-active --quiet "$SERVICE_NOVNC" || failures=$((failures + 1))
   systemctl is-active --quiet nginx || failures=$((failures + 1))
   wait_port 127.0.0.1 "$VNC_PORT" 1 || failures=$((failures + 1))
