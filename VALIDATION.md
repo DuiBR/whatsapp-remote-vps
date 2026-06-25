@@ -1,4 +1,4 @@
-# ✅ Validação da versão 2.5.1
+# ✅ Validação da versão 2.5.2
 
 Validações executadas antes da geração do pacote:
 
@@ -18,3 +18,6 @@ Validações executadas antes da geração do pacote:
 - teste de integridade do ZIP.
 
 A instalação integral ainda deve ser testada em uma VPS real, porque systemd, Nginx, VNC, navegador e pacotes APT dependem do sistema operacional e da rede do provedor.
+- teste de regressão para o erro `chrome_crashpad_handler: --database is required`;
+- ausência das flags antigas `--disable-breakpad` e `--disable-crash-reporter`;
+- preparação dos diretórios do banco local do Crashpad.

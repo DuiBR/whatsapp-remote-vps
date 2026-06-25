@@ -1,6 +1,6 @@
 # 🟢 WhatsApp Remote VPS
 
-> **Versão 2.5.1:** navegador supervisionado separadamente e verificação local da conexão do WhatsApp.
+> **Versão 2.5.2:** navegador supervisionado separadamente e verificação local da conexão do WhatsApp.
 >
 > Execute o **WhatsApp Web 24 horas por dia** em uma VPS com desktop remoto acessível pelo navegador do celular ou computador.
 
@@ -465,7 +465,7 @@ sudo whatsapp-remote repair
 
 ### O WhatsApp Web não está rodando
 
-A versão 2.5.1 usa um serviço exclusivo para o navegador. Verifique:
+A versão 2.5.2 usa um serviço exclusivo para o navegador. Verifique:
 
 ```bash
 sudo systemctl status whatsapp-browser.service --no-pager
@@ -500,7 +500,7 @@ Confirme TCP 443 no firewall do provedor. As regras do NSG/Security List não po
 
 ## 🧰 Correção automática do navegador
 
-A versão 2.5.1 inclui um preflight que corrige automaticamente o `chrome-sandbox`, prepara DBus e remove travas antigas antes de iniciar o navegador. Se o Chrome não abrir:
+A versão 2.5.2 inclui um preflight que corrige automaticamente o `chrome-sandbox`, prepara DBus e remove travas antigas antes de iniciar o navegador. Se o Chrome não abrir:
 
 ```bash
 menu
@@ -519,3 +519,24 @@ O diagnóstico informa o modo de sandbox e mantém um log dedicado em:
 ```
 
 O modo sem sandbox permanece bloqueado por padrão por segurança.
+
+## 🧯 Correção do erro Crashpad
+
+A versão **2.5.2** corrige automaticamente o erro:
+
+```text
+chrome_crashpad_handler: --database is required
+```
+
+A correção cria os diretórios locais exigidos pelo Chrome, ajusta as permissões do usuário desktop, remove flags antigas de crash reporting e utiliza o binário real do Google Chrome quando disponível. Para aplicar numa instalação existente:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh?v=2.5.2" | sudo bash -s -- --repair --auto
+```
+
+Depois confira:
+
+```bash
+sudo whatsapp-remote browser-repair
+sudo whatsapp-remote status
+```

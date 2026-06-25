@@ -425,7 +425,11 @@ install_browser() {
   BROWSER_TYPE=""
   if [[ "$ARCH" == "amd64" ]]; then
     if command_exists google-chrome-stable; then
-      BROWSER_BIN="$(command -v google-chrome-stable)"
+      if [[ -x /opt/google/chrome/chrome ]]; then
+        BROWSER_BIN="/opt/google/chrome/chrome"
+      else
+        BROWSER_BIN="$(command -v google-chrome-stable)"
+      fi
       BROWSER_TYPE="Google Chrome Stable"
       return 0
     fi
@@ -436,7 +440,11 @@ install_browser() {
       https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o "$tmp_deb" \
       && DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp_deb"; then
       rm -f "$tmp_deb"
-      BROWSER_BIN="$(command -v google-chrome-stable)"
+      if [[ -x /opt/google/chrome/chrome ]]; then
+        BROWSER_BIN="/opt/google/chrome/chrome"
+      else
+        BROWSER_BIN="$(command -v google-chrome-stable)"
+      fi
       BROWSER_TYPE="Google Chrome Stable"
       return 0
     fi

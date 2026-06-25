@@ -1,6 +1,18 @@
+# CHANGELOG
+
+## 2.5.2 — Correção definitiva do Chrome/Crashpad
+
+- Corrige o erro `chrome_crashpad_handler: --database is required` no Google Chrome 149+ sob systemd.
+- Remove `--disable-breakpad` e `--disable-crash-reporter`, flags antigas que interferiam na inicialização atual do Crashpad.
+- Cria e corrige permissões dos bancos locais de falha em `~/.config/google-chrome/Crash Reports`, `~/.config/chromium/Crash Reports` e no perfil persistente.
+- Configura `XDG_CACHE_HOME` e `XDG_DATA_HOME` e prepara `~/.local/share/applications`.
+- Usa diretamente `/opt/google/chrome/chrome` quando disponível, evitando efeitos colaterais do wrapper de integração desktop.
+- O diagnóstico reconhece explicitamente falhas do Crashpad e mostra uma ação direcionada.
+- Adiciona teste de regressão para impedir que as flags problemáticas voltem ao projeto.
+
 # Changelog
 
-## 2.5.1 — Correção de core dump do Chrome
+## 2.5.2 — Correção de core dump do Chrome
 
 - Corrige automaticamente proprietário e permissão `4755` do `chrome-sandbox`.
 - Adiciona preflight executado como root antes de cada inicialização do navegador.
