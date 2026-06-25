@@ -504,7 +504,7 @@ if [[ "$(readlink -f "$SCRIPT_DIR")" != "$(readlink -f "$INSTALL_DIR")" ]]; then
   cp -a "$SCRIPT_DIR/." "$INSTALL_DIR/"
 fi
 chmod 755 "$INSTALL_DIR"/*.sh "$INSTALL_DIR/lib/common.sh"
-ln -sfn "$INSTALL_DIR/manage.sh" /usr/local/sbin/whatsapp-remote
+install_manager_command
 install_menu_command
 save_config
 render_runtime_scripts
@@ -550,15 +550,25 @@ write_credentials_file \
 unset VNC_PASSWORD WEB_PASSWORD WR_VNC_PASSWORD WR_WEB_PASSWORD || true
 rm -f /etc/whatsapp-remote.conf 2>/dev/null || true
 
-sleep 2
-quick_healthcheck || {
+VALIDATION_OK=1
+sleep 3
+if ! quick_healthcheck; then
   warn "A validação encontrou um componente indisponível; executando reparo rápido."
   restart_stack
-}
+  sleep 3
+  if ! quick_healthcheck; then
+    VALIDATION_OK=0
+  fi
+fi
 
 printf '\n'
 ui_rule
-ok "Instalação concluída e validada."
+if (( VALIDATION_OK == 1 )); then
+  ok "Instalação concluída e validada."
+else
+  warn "Instalação concluída, mas o diagnóstico ainda encontrou problemas."
+  warn "Consulte a seção 'Saúde do sistema' abaixo ou execute: menu"
+fi
 printf '  Sistema:             %s (%s)\n' "$OS_NAME" "$ARCH"
 printf '  Navegador:          %s\n' "$BROWSER_TYPE"
 printf '  Usuário desktop:    %s\n' "$APP_USER"

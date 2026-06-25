@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f -- "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")"
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+if [[ ! -r "$SCRIPT_DIR/lib/common.sh" && -r /opt/whatsapp-remote/lib/common.sh ]]; then
+  SCRIPT_DIR="/opt/whatsapp-remote"
+fi
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 require_root
@@ -26,18 +33,25 @@ confirm_action() {
 
 manager_dashboard() {
   load_config
-  local d n w ip
+  local d n w ip private_ip browser mem swap disk load_text
   d="$(systemctl is-active "$SERVICE_DESKTOP" 2>/dev/null || true)"
   n="$(systemctl is-active "$SERVICE_NOVNC" 2>/dev/null || true)"
   w="$(systemctl is-active nginx 2>/dev/null || true)"
   ip="$(detect_public_ip || true)"
-  printf ' URL: %s\n' "$(access_url)"
-  printf ' IP atual: %s | Desktop: %s | noVNC: %s | Nginx: %s\n' \
-    "${ip:-não detectado}" "$d" "$n" "$w"
-  printf ' RAM: %s | Swap: %s | Disco livre: %s\n' \
-    "$(free -h | awk '/Mem:/ {print $3 "/" $2}')" \
-    "$(free -h | awk '/Swap:/ {print $3 "/" $2}')" \
-    "$(df -h / | awk 'NR==2 {print $4}')"
+  private_ip="$(detect_private_ip || true)"
+  browser="$(browser_is_running && echo ativo || echo inativo)"
+  mem="$(free -h | awk '/Mem:/ {print $3 "/" $2 " (livre " $7 ")"}')"
+  swap="$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
+  disk="$(df -h / | awk 'NR==2 {print $4}')"
+  load_text="$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || true)"
+
+  printf ' URL:          %s\n' "$(access_url)"
+  printf ' IP público:   %s | IP privado: %s\n' "${ip:-não detectado}" "${private_ip:-não detectado}"
+  printf ' Sistema:      %s %s (%s) | Kernel: %s\n' "$OS_ID" "$OS_VERSION" "$ARCH" "$(uname -r 2>/dev/null || echo '?')"
+  printf ' Serviços:     Desktop %s | noVNC %s | Nginx %s | Navegador %s\n' "$d" "$n" "$w" "$browser"
+  printf ' Recursos:     RAM %s | Swap %s | Disco %s | Carga %s\n' "$mem" "$swap" "$disk" "${load_text:-?}"
+  echo
+  show_health_summary compact || true
 }
 
 change_web_credentials() {
@@ -421,7 +435,13 @@ main_menu() {
   local option
   while true; do
     ui_header "Manager $PROJECT_VERSION"
-    if [[ -r "$CONFIG_FILE" ]]; then manager_dashboard; else warn "Instalação não encontrada."; fi
+    if [[ -r "$CONFIG_FILE" ]]; then
+      if ! (manager_dashboard); then
+        warn "A configuração existe, mas está incompleta ou inválida. Use Reparação automática ou reinstale do zero."
+      fi
+    else
+      warn "Instalação/configuração não encontrada. Use Atualizar/reparar pelo GitHub ou reinstale do zero."
+    fi
     echo
     echo "  1) Visualizar usuários e senhas"
     echo "  2) Alterar usuário e senha do acesso web (remoteadmin)"
@@ -430,7 +450,7 @@ main_menu() {
     echo "  5) Alterar resolução"
     echo "  6) Configurar IP ou domínio"
     echo "  7) Iniciar, parar ou reiniciar serviços"
-    echo "  8) Ver status detalhado"
+    echo "  8) Status e diagnóstico completo"
     echo "  9) Reparação automática"
     echo " 10) Atualizar/reparar pelo GitHub"
     echo " 11) Ver logs e diagnóstico"
@@ -447,7 +467,7 @@ main_menu() {
       5) change_resolution; ui_pause ;;
       6) access_menu ;;
       7) service_menu ;;
-      8) ui_header "Status detalhado"; show_status; ui_pause ;;
+      8) ui_header "Status e diagnóstico completo"; show_status; ui_pause ;;
       9) repair_installation; ui_pause ;;
       10) update_from_github; ui_pause ;;
       11) show_logs_menu ;;
@@ -476,7 +496,7 @@ Comandos:
   start                Inicia a pilha
   stop                 Para desktop e noVNC
   restart              Reinicia toda a pilha
-  status               Exibe diagnóstico detalhado
+  status               Exibe status, recursos e causas de falhas
   repair               Repara permissões, serviços e configuração
   update               Atualiza/repara pelo GitHub
   logs                 Abre o menu de logs

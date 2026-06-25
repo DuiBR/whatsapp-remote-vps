@@ -1,31 +1,46 @@
-# Changelog
+# 📋 Changelog
+
+## 2.4.0 — Assistente contextual e diagnóstico preventivo
+
+- O comando oficial via `curl | sudo bash` agora identifica o contexto antes de agir.
+- Em uma máquina nova, pergunta claramente entre instalação automática e manual/personalizada.
+- Em máquinas com instalação anterior, oferece reparar, abrir o Manager, diagnosticar, reinstalar ou desinstalar.
+- Detecção ampliada para instalações completas, antigas e parcialmente danificadas.
+- Resumo de sistema exibido antes da operação: distribuição, arquitetura, provedor, IP, RAM e disco.
+- Resumo rápido da instalação existente antes de reparar ou remover.
+- Manager principal ampliado com sistema, kernel, IP público/privado, serviços, navegador, recursos e carga.
+- Novo painel automático de saúde com erros e avisos em linguagem direta.
+- Diagnóstico de serviços inativos, falha no boot, portas internas, HTTPS, navegador, perfil, permissões e credenciais.
+- Alerta quando as portas VNC/noVNC estão expostas fora do localhost.
+- Alerta quando o IP público mudou e a URL/certificado por IP ficou desatualizada.
+- Verificação de certificado HTTPS ausente, vencido ou próximo do vencimento.
+- Alertas de pouca RAM, ausência de swap, memória disponível baixa e pouco espaço em disco.
+- Validação final da instalação passa a aguardar também a inicialização do navegador.
+- O instalador deixa de afirmar que tudo foi validado quando ainda existem falhas.
+- README totalmente reorganizado com ícones, tabelas, fluxos de instalação, menu, segurança e solução de problemas.
+
+## 2.3.1
+
+- Corrigido o comando `menu` que procurava `lib/common.sh` em `/usr/local/sbin/lib`.
+- O comando `whatsapp-remote` agora é um wrapper robusto que executa o Manager em `/opt/whatsapp-remote`.
+- `manage.sh` resolve links simbólicos e possui fallback automático para o diretório de instalação.
+- A versão salva por instalações antigas não sobrescreve mais a versão atual do código.
+- Atualizações existentes passam a mostrar corretamente a versão instalada.
 
 ## 2.3.0 — Menu global, credenciais e reinstalação completa
 
-- Adicionado comando global `menu` para abrir o Manager diretamente no terminal.
-- O comando solicita `sudo` automaticamente quando executado sem privilégios de root.
-- Adicionada opção para visualizar usuário e senha do desktop remoto.
-- Adicionada visualização do usuário e senha do acesso web/remoteadmin.
-- Credenciais conhecidas agora são preservadas ao reparar, alterar IP, domínio, usuário ou resolução.
-- Arquivo de credenciais reorganizado e protegido com permissão `600`.
-- Adicionada opção **Reinstalar tudo do zero**.
-- A reinstalação baixa e valida o bootstrap antes de remover a instalação atual.
-- A reinstalação completa apaga perfil, sessão do WhatsApp, usuário desktop, certificados e credenciais.
-- Swap e pacotes do sistema são preservados durante a reinstalação completa.
-- Desinstalador ganhou modos `--purge`, `--yes` e `--keep-swap`.
-- Reparação automática recria o comando `menu` quando necessário.
-- Um comando `menu` preexistente é salvo em backup antes de ser substituído.
-- Melhorados textos, avisos e ajuda do Manager.
+- Adicionado comando global `menu`.
+- Visualização e alteração de credenciais.
+- Reinstalação completa pelo Manager.
+- Atualização e reparação preservando o perfil do WhatsApp.
 
-## 2.2.1 — Validação tolerante a uploads pelo navegador
+## 2.2.1 — Validação tolerante
 
 - Arquivos ocultos deixaram de ser obrigatórios.
 - Checksums complementares não bloqueiam uma estrutura válida.
-- Mantida validação obrigatória de estrutura e sintaxe Bash.
 
 ## 2.2.0 — Instalador inteligente
 
 - Menu de instalação e Manager.
 - Instalação automática ou personalizada.
 - Detecção de sistema, arquitetura, IP, provedor, RAM e disco.
-- Reparação, atualização, logs, status e desinstalação.

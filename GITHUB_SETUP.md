@@ -1,6 +1,6 @@
-# Publicação no GitHub
+# 🚀 Publicação no GitHub
 
-Repositório esperado:
+Repositório:
 
 ```text
 https://github.com/DuiBR/whatsapp-remote-vps
@@ -8,31 +8,41 @@ https://github.com/DuiBR/whatsapp-remote-vps
 
 Envie o conteúdo desta pasta diretamente para a raiz do repositório.
 
-## Atualização pelo terminal
+## Atualizar pelo terminal
 
 ```bash
-unzip whatsapp-remote-github-v2.3.0.zip
+unzip whatsapp-remote-github-v2.4.0.zip
 git clone https://github.com/DuiBR/whatsapp-remote-vps.git
-cp -a whatsapp-remote-github-v2.3.0/. whatsapp-remote-vps/
+cp -a whatsapp-remote-github-v2.4.0/. whatsapp-remote-vps/
 cd whatsapp-remote-vps
 git add -A
-git commit -m "WhatsApp Remote VPS v2.3.0"
+git commit -m "WhatsApp Remote VPS v2.4.0"
 git push origin main
 ```
 
-## Instalação
+## Instalação interativa
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash
 ```
 
-## Atualizar uma máquina existente
+O instalador detecta automaticamente se a máquina é nova ou se já existe uma instalação.
+
+## Instalação automática
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh?v=2.3.0" | sudo bash -s -- --repair --auto
+curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
+sudo bash -s -- --auto
 ```
 
-Depois da atualização, o Manager abre digitando:
+## Reparação automática
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
+sudo bash -s -- --repair --auto
+```
+
+## Manager
 
 ```bash
 menu
