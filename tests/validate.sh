@@ -18,7 +18,7 @@ done
 
 sha256sum -c MANIFEST.sha256
 
-grep -q 'PROJECT_VERSION="2.5.1"' lib/common.sh
+grep -q 'PROJECT_VERSION="2.5.2"' lib/common.sh
 grep -q 'new_install_menu' setup.sh
 grep -q 'existing_install_menu' setup.sh
 grep -q 'Reparar/atualizar preservando' setup.sh
@@ -48,3 +48,9 @@ python3 -m py_compile "$tmp_python"
 rm -f "$tmp_python" "${tmp_python}c" 2>/dev/null || true
 
 echo "Validação estática concluída com sucesso."
+
+# Regressão Chrome 149+/Crashpad: não usar flags obsoletas e preparar o DB local.
+! grep -q -- '--disable-crash-reporter' lib/common.sh
+! grep -q -- '--disable-breakpad' lib/common.sh
+grep -q 'google-chrome/Crash Reports' lib/common.sh
+grep -q 'BROWSER_EXEC="/opt/google/chrome/chrome"' lib/common.sh
