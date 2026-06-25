@@ -222,6 +222,7 @@ repair_installation() {
   if ! id "$APP_USER" >/dev/null 2>&1; then
     warn "Usuário $APP_USER não existe; recriando."
     useradd -m -U -s /bin/bash "$APP_USER"
+    APP_USER_MANAGED=1
     APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
   fi
   APP_GROUP="$(id -gn "$APP_USER")"
@@ -253,6 +254,7 @@ repair_installation() {
   render_openbox_config
   configure_novnc_mobile_defaults
   render_systemd_units
+  install_menu_command
   systemctl enable "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx >/dev/null
   nginx -t
   restart_stack
@@ -312,21 +314,37 @@ show_logs_menu() {
 
 show_info() {
   load_config
-  ui_header "Informações de acesso"
-  echo "URL:                      $(access_url)"
-  echo "Usuário web:              $WEB_USER"
-  echo "Usuário Linux desktop:    $APP_USER"
-  echo "Perfil persistente:       $PROFILE_DIR"
-  echo "Arquivo de credenciais:   $CREDENTIALS_FILE"
+  local vnc_password="" web_password=""
+  vnc_password="$(credential_value 'Senha VNC' || true)"
+  web_password="$(credential_value 'Senha web' || true)"
+
+  ui_header "Usuários e senhas de acesso"
+  printf '%bURL de acesso%b\n' "$C_BOLD" "$C_RESET"
+  echo "  $(access_url)"
   echo
-  if [[ -r "$CREDENTIALS_FILE" ]]; then
-    echo "Conteúdo do arquivo protegido:"
-    ui_rule
-    cat "$CREDENTIALS_FILE"
-    ui_rule
+  printf '%bDesktop remoto%b\n' "$C_BOLD" "$C_RESET"
+  echo "  Usuário: $APP_USER"
+  if [[ -n "$vnc_password" ]]; then
+    echo "  Senha:   $vnc_password"
+  else
+    echo "  Senha:   não armazenada"
+    echo "  Ação:    use a opção 'Alterar senha do desktop remoto (VNC)'."
   fi
   echo
-  echo "Senhas antigas armazenadas apenas em hash não podem ser recuperadas; podem ser redefinidas pelo menu."
+  printf '%bAcesso web / remoteadmin%b\n' "$C_BOLD" "$C_RESET"
+  echo "  Usuário: $WEB_USER"
+  if [[ -n "$web_password" ]]; then
+    echo "  Senha:   $web_password"
+  else
+    echo "  Senha:   não armazenada"
+    echo "  Ação:    use a opção 'Alterar usuário e senha do acesso web'."
+  fi
+  echo
+  echo "Perfil persistente:     $PROFILE_DIR"
+  echo "Arquivo protegido:      $CREDENTIALS_FILE"
+  echo
+  echo "O noVNC normalmente solicita somente a senha do desktop remoto."
+  echo "As credenciais são exibidas apenas para root e ficam em arquivo com permissão 600."
 }
 
 service_menu() {
@@ -355,6 +373,43 @@ service_menu() {
   done
 }
 
+reinstall_from_scratch() {
+  load_config
+  local repository="${GITHUB_REPOSITORY:-$GITHUB_REPOSITORY_DEFAULT}"
+  local ref="${GITHUB_REF:-$GITHUB_REF_DEFAULT}"
+  local tmp_setup confirmation
+
+  ui_header "Reinstalar tudo do zero"
+  warn "Esta operação APAGARÁ o perfil do navegador e desconectará o WhatsApp."
+  warn "Também removerá o usuário desktop, credenciais, certificados e configurações do projeto."
+  echo
+  echo "Depois da reinstalação será necessário escanear um novo QR Code."
+  echo "A swap e os pacotes do sistema serão preservados para evitar alterações desnecessárias."
+  echo
+  read -r -p "Digite REINSTALAR para continuar ou 0 para voltar: " confirmation
+  [[ "$confirmation" == "0" ]] && return 0
+  [[ "$confirmation" == "REINSTALAR" ]] || { warn "Confirmação inválida. Operação cancelada."; return 0; }
+  confirm_action "Confirmar exclusão completa e reinstalação automática?" || return 0
+
+  info "Baixando previamente o instalador para evitar ficar sem o Manager em caso de falha de rede..."
+  tmp_setup="$(mktemp /tmp/whatsapp-remote-reinstall.XXXXXX.sh)"
+  if ! curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 \
+    "https://raw.githubusercontent.com/${repository}/${ref}/setup.sh" -o "$tmp_setup"; then
+    rm -f "$tmp_setup"
+    warn "Não foi possível baixar o instalador. Nada foi removido."
+    return 1
+  fi
+  bash -n "$tmp_setup" || { rm -f "$tmp_setup"; warn "O instalador baixado possui erro de sintaxe. Nada foi removido."; return 1; }
+  chmod 700 "$tmp_setup"
+
+  backup_current_config
+  info "Removendo a instalação atual e o perfil do WhatsApp..."
+  bash "$INSTALL_DIR/uninstall.sh" --purge --yes --keep-swap
+
+  info "Iniciando instalação limpa e automática..."
+  exec bash "$tmp_setup" --repository "$repository" --ref "$ref" --auto
+}
+
 run_uninstall() {
   ui_header "Desinstalar o sistema"
   warn "Esta opção remove serviços e acesso remoto. O perfil só será apagado se você confirmar dentro do desinstalador."
@@ -368,9 +423,9 @@ main_menu() {
     ui_header "Manager $PROJECT_VERSION"
     if [[ -r "$CONFIG_FILE" ]]; then manager_dashboard; else warn "Instalação não encontrada."; fi
     echo
-    echo "  1) Ver acesso e credenciais"
-    echo "  2) Alterar usuário e senha web"
-    echo "  3) Alterar senha VNC"
+    echo "  1) Visualizar usuários e senhas"
+    echo "  2) Alterar usuário e senha do acesso web (remoteadmin)"
+    echo "  3) Alterar senha do desktop remoto (VNC)"
     echo "  4) Alterar usuário Linux do desktop"
     echo "  5) Alterar resolução"
     echo "  6) Configurar IP ou domínio"
@@ -379,7 +434,8 @@ main_menu() {
     echo "  9) Reparação automática"
     echo " 10) Atualizar/reparar pelo GitHub"
     echo " 11) Ver logs e diagnóstico"
-    echo " 12) Desinstalar"
+    echo " 12) Reinstalar tudo do zero"
+    echo " 13) Desinstalar"
     echo "  0) Sair"
     echo
     read -r -p "Escolha: " option
@@ -395,7 +451,8 @@ main_menu() {
       9) repair_installation; ui_pause ;;
       10) update_from_github; ui_pause ;;
       11) show_logs_menu ;;
-      12) run_uninstall ;;
+      12) reinstall_from_scratch ;;
+      13) run_uninstall ;;
       0) exit 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -404,11 +461,12 @@ main_menu() {
 
 help_text() {
   cat <<HELP
-Uso: sudo whatsapp-remote [comando]
+Uso: menu
+     sudo whatsapp-remote [comando]
 
 Comandos:
   menu                 Abre o Manager interativo
-  info                 Mostra URL, usuários e arquivo de credenciais
+  info                 Mostra URL, usuários e senhas armazenadas
   web-credentials      Altera usuário e senha web
   vnc-password         Altera a senha VNC
   desktop-user         Renomeia o usuário Linux preservando o perfil
@@ -422,6 +480,7 @@ Comandos:
   repair               Repara permissões, serviços e configuração
   update               Atualiza/repara pelo GitHub
   logs                 Abre o menu de logs
+  reinstall            Reinstala tudo do zero e apaga a sessão do WhatsApp
   uninstall            Abre o desinstalador
   help                 Exibe esta ajuda
 HELP
@@ -443,6 +502,7 @@ case "${1:-menu}" in
   repair) repair_installation ;;
   update) update_from_github ;;
   logs) show_logs_menu ;;
+  reinstall) reinstall_from_scratch ;;
   uninstall) run_uninstall ;;
   help|-h|--help) help_text ;;
   *) die "Comando desconhecido: $1. Use: whatsapp-remote help" ;;

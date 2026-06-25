@@ -1,107 +1,54 @@
 # WhatsApp Remote VPS
 
-Instalador universal para manter o WhatsApp Web aberto 24 horas em uma VPS, com Chrome/Chromium, desktop Openbox, TigerVNC, noVNC, Nginx e acesso HTTPS pelo navegador do celular ou computador.
+Ambiente gráfico leve e persistente para manter o WhatsApp Web ativo em uma VPS e controlá-lo pelo navegador do celular ou computador.
 
 ## Compatibilidade
 
-| Sistema | amd64 / x86-64 | arm64 / aarch64 |
-|---|:---:|:---:|
-| Ubuntu 20.04 | ✅ | ✅ |
-| Ubuntu 22.04 | ✅ | ✅ |
-| Ubuntu 24.04 | ✅ | ✅ |
-| Debian 11 | ✅ | ✅ |
-| Debian 12 | ✅ | ✅ |
+- Ubuntu 20.04, 22.04 e 24.04
+- Debian 11 e 12
+- amd64/x86-64 e arm64/aarch64
+- Google Chrome Stable em amd64, com fallback inteligente para Chromium
+- Chromium em arm64
 
-- **amd64:** Google Chrome Stable, com fallback inteligente para Chromium.
-- **arm64:** Chromium nativo no Debian e Chromium Snap no Ubuntu.
-- **Memória baixa:** detecta a RAM, cria swap quando necessário e reduz processos do navegador.
-- **Celular:** noVNC configurado para toque, ponteiro visível, escala automática e reconexão.
+O instalador detecta automaticamente sistema, arquitetura, RAM, disco, provedor, IP público, navegador e necessidade de swap.
 
-
-## Upload pelo navegador do GitHub
-
-Ao enviar os arquivos pelo celular, `.gitignore` e `.gitattributes` podem ficar ocultos no seletor. Eles são opcionais e não impedem a instalação. Os arquivos essenciais são `setup.sh`, `install.sh`, `manage.sh`, `repair.sh`, `status.sh`, `uninstall.sh` e `lib/common.sh`.
-
-A partir da versão 2.2.1, diferenças no `MANIFEST.sha256` geram apenas um aviso quando a estrutura e a sintaxe dos scripts estiverem válidas.
-
-## Instalação pelo menu
-
-Execute como root ou com `sudo`:
+## Instalação pelo GitHub
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash
 ```
 
-O menu inicial oferece:
-
-```text
-1) Instalação automática recomendada
-2) Instalação personalizada com revisão das informações
-3) Atualizar e reparar preservando a sessão do WhatsApp
-4) Abrir o Manager
-5) Ver status detalhado
-6) Ver logs
-7) Desinstalar
-0) Sair
-```
-
-## Instalação automática
+Para instalar sem perguntas:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo bash -s -- --auto
+curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash -s -- --auto
 ```
 
-O instalador detecta automaticamente:
+## Abrir o menu
 
-- distribuição e versão;
-- arquitetura do processador;
-- provedor de nuvem quando possível;
-- IPv4 público, inclusive pela metadata da Oracle Cloud;
-- memória, swap e espaço em disco;
-- navegador compatível;
-- instalação anterior e perfil já conectado do WhatsApp.
-
-As credenciais geradas ficam em:
+Depois da instalação, basta digitar:
 
 ```bash
-sudo cat /root/whatsapp-remote-credentials.txt
+menu
 ```
 
-## Instalação personalizada
-
-A opção personalizada não obriga a responder várias perguntas. Primeiro, o instalador detecta tudo, gera escolhas recomendadas e apresenta uma tela de revisão:
-
-```text
-1) Usuário desktop
-2) Usuário web
-3) Senha VNC
-4) Senha web
-5) Resolução
-6) IP ou domínio
-7) Swap
-8) Detectar novamente o IP
-9) Restaurar escolhas inteligentes
-I) Instalar
-0) Cancelar
-```
-
-É possível voltar, corrigir qualquer informação e revisar tudo antes de instalar. As senhas ficam visíveis durante a digitação, conforme solicitado.
-
-## Manager
-
-Após a instalação:
+Também continuam disponíveis:
 
 ```bash
 sudo whatsapp-remote
+sudo whatsapp-remote status
+sudo whatsapp-remote repair
+sudo whatsapp-remote update
 ```
 
-O Manager possui painel com URL, IP atual, serviços, RAM, swap e disco, além das opções:
+O comando `menu` funciona para root e, quando executado por um usuário comum, solicita privilégios por `sudo`.
+
+## Opções do Manager
 
 ```text
-1) Ver acesso e credenciais
-2) Alterar usuário e senha web
-3) Alterar senha VNC
+1) Visualizar usuários e senhas
+2) Alterar usuário e senha do acesso web (remoteadmin)
+3) Alterar senha do desktop remoto (VNC)
 4) Alterar usuário Linux do desktop
 5) Alterar resolução
 6) Configurar IP ou domínio
@@ -110,14 +57,80 @@ O Manager possui painel com URL, IP atual, serviços, RAM, swap e disco, além d
 9) Reparação automática
 10) Atualizar/reparar pelo GitHub
 11) Ver logs e diagnóstico
-12) Desinstalar
+12) Reinstalar tudo do zero
+13) Desinstalar
 0) Sair
 ```
 
-### Comandos diretos
+## Visualização de credenciais
+
+A opção 1 mostra:
+
+- URL de acesso;
+- usuário do desktop remoto;
+- senha VNC;
+- usuário web, normalmente `remoteadmin`;
+- senha web.
+
+As senhas são mantidas em:
+
+```text
+/root/whatsapp-remote-credentials.txt
+```
+
+O arquivo possui permissão `600` e pode ser lido apenas por root. Instalações antigas cujas senhas já foram perdidas por armazenamento somente em hash precisam redefini-las uma vez pelo menu.
+
+## Reinstalação completa
+
+A opção **Reinstalar tudo do zero**:
+
+- baixa e valida o instalador antes de apagar qualquer coisa;
+- remove serviços, configurações, certificados e credenciais;
+- remove o usuário desktop e o perfil do navegador;
+- desconecta a sessão atual do WhatsApp;
+- reinstala automaticamente com novas credenciais;
+- preserva a swap e os pacotes do sistema.
+
+Depois será necessário escanear um novo QR Code.
+
+## Atualizar preservando a sessão
 
 ```bash
-sudo whatsapp-remote status
+menu
+```
+
+Escolha **Atualizar/reparar pelo GitHub**. Ou execute:
+
+```bash
+sudo whatsapp-remote update
+```
+
+A atualização normal preserva o perfil do navegador e a sessão vinculada do WhatsApp.
+
+## Acesso remoto
+
+A instalação por IP usa certificado autoassinado:
+
+```text
+https://IP_DA_VPS/
+```
+
+O navegador poderá exibir um aviso de certificado. Para domínio, use o menu para configurar Let's Encrypt.
+
+Libere externamente:
+
+- TCP 443 para acesso HTTPS;
+- TCP 80 somente quando usar domínio e Let's Encrypt.
+
+Não exponha publicamente:
+
+- TCP 5901;
+- TCP 6080.
+
+## Comandos diretos
+
+```bash
+menu
 sudo whatsapp-remote info
 sudo whatsapp-remote web-credentials
 sudo whatsapp-remote vnc-password
@@ -128,106 +141,30 @@ sudo whatsapp-remote access-domain
 sudo whatsapp-remote start
 sudo whatsapp-remote stop
 sudo whatsapp-remote restart
+sudo whatsapp-remote status
 sudo whatsapp-remote repair
 sudo whatsapp-remote update
+sudo whatsapp-remote reinstall
 sudo whatsapp-remote logs
 sudo whatsapp-remote uninstall
 ```
 
-## Instalação com parâmetros
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo bash -s -- --auto --ip 164.152.48.215 --geometry 1280x720
-```
-
-Por domínio:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo bash -s -- --auto \
-  --domain whatsapp.exemplo.com \
-  --email admin@exemplo.com
-```
-
-Credenciais por variáveis, evitando colocá-las na linha principal do comando:
-
-```bash
-export WR_DESKTOP_USER='whatsapp'
-export WR_WEB_USER='remoteadmin'
-export WR_VNC_PASSWORD='SenhaVNC'
-export WR_WEB_PASSWORD='SenhaWebMuitoForte'
-
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo -E bash -s -- --auto
-
-unset WR_DESKTOP_USER WR_WEB_USER WR_VNC_PASSWORD WR_WEB_PASSWORD
-```
-
-## Atualizar e reparar
-
-Pelo Manager:
-
-```bash
-sudo whatsapp-remote update
-```
-
-Ou pelo link:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo bash -s -- --repair --auto
-```
-
-A atualização preserva o perfil do navegador, a sessão conectada do WhatsApp, as credenciais e a forma de acesso já configurada.
-
-## Firewall
-
-Libere no firewall do provedor:
-
-```text
-TCP 443 — acesso HTTPS
-TCP 80  — necessário quando usar domínio e Let's Encrypt
-```
-
-Não exponha publicamente:
-
-```text
-TCP 5901 — VNC interno
-TCP 6080 — noVNC interno
-```
-
-Na Oracle Cloud, a porta deve ser liberada no NSG ou na Security List da VCN. O instalador também ajusta UFW/firewalld quando eles já estiverem ativos no sistema.
-
-## Acesso
-
-Pelo IP:
-
-```text
-https://IP_DA_VPS/
-```
-
-O certificado por IP é autoassinado, portanto o navegador exibirá um aviso de segurança. Por domínio, o instalador usa Let's Encrypt.
-
 ## Arquivos principais
 
 ```text
-setup.sh       Bootstrap e menu via GitHub
-install.sh     Instalação inteligente e revisão das informações
-manage.sh      Manager instalado como whatsapp-remote
-repair.sh      Reparação rápida
-status.sh      Diagnóstico
-uninstall.sh   Desinstalação assistida
-lib/common.sh  Funções compartilhadas
+setup.sh              Bootstrap via GitHub
+install.sh            Instalador universal
+manage.sh             Manager e menu
+repair.sh             Reparação rápida
+status.sh             Diagnóstico
+uninstall.sh          Desinstalação e purge
+lib/common.sh         Funções compartilhadas
 ```
 
-## Logs e configuração
+## Segurança
 
-```text
-/var/log/whatsapp-remote-install.log
-/etc/whatsapp-remote/config.env
-/opt/whatsapp-remote/
-/var/backups/whatsapp-remote/
-```
-
-O perfil persistente fica no diretório do usuário Linux criado pelo instalador. Não remova esse usuário nem sua pasta pessoal se quiser preservar a sessão do WhatsApp.
+- VNC e noVNC escutam apenas em `127.0.0.1`.
+- O acesso externo passa pelo Nginx em HTTPS.
+- O arquivo de credenciais é acessível somente por root.
+- Uma eventual instalação prévia de `/usr/local/bin/menu` é salva em backup antes da criação do comando deste projeto.
+- A reinstalação completa exige confirmação escrita e confirmação adicional.

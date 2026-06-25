@@ -1,50 +1,31 @@
-# CHANGELOG
+# Changelog
 
-## 2.2.1 — Correção da validação no GitHub
+## 2.3.0 — Menu global, credenciais e reinstalação completa
 
-- Corrigida a falha de instalação quando `.gitignore` e `.gitattributes` não são enviados pelo navegador do celular.
-- Arquivos ocultos do GitHub deixaram de ser obrigatórios para a instalação.
-- `VERSION` e arquivos de documentação deixaram de bloquear a validação do pacote.
-- A validação obrigatória agora verifica a presença e a sintaxe dos scripts essenciais.
-- O checksum passou a ser uma camada complementar: diferenças geram aviso, mas não interrompem uma instalação estruturalmente válida.
-- Mensagens de diagnóstico mais claras para uploads realizados pelo navegador do GitHub.
+- Adicionado comando global `menu` para abrir o Manager diretamente no terminal.
+- O comando solicita `sudo` automaticamente quando executado sem privilégios de root.
+- Adicionada opção para visualizar usuário e senha do desktop remoto.
+- Adicionada visualização do usuário e senha do acesso web/remoteadmin.
+- Credenciais conhecidas agora são preservadas ao reparar, alterar IP, domínio, usuário ou resolução.
+- Arquivo de credenciais reorganizado e protegido com permissão `600`.
+- Adicionada opção **Reinstalar tudo do zero**.
+- A reinstalação baixa e valida o bootstrap antes de remover a instalação atual.
+- A reinstalação completa apaga perfil, sessão do WhatsApp, usuário desktop, certificados e credenciais.
+- Swap e pacotes do sistema são preservados durante a reinstalação completa.
+- Desinstalador ganhou modos `--purge`, `--yes` e `--keep-swap`.
+- Reparação automática recria o comando `menu` quando necessário.
+- Um comando `menu` preexistente é salvo em backup antes de ser substituído.
+- Melhorados textos, avisos e ajuda do Manager.
 
-## 2.2.0 — Instalador inteligente e Manager completo
+## 2.2.1 — Validação tolerante a uploads pelo navegador
 
-- Adicionado menu principal diretamente no comando de instalação pelo GitHub.
-- Instalação automática recomendada com uma única escolha.
-- Assistente personalizado baseado em uma tela de revisão, sem perguntas desnecessárias.
-- Opções para voltar, corrigir, detectar novamente e restaurar escolhas inteligentes.
-- Detecção automática de Ubuntu 20.04/22.04/24.04 e Debian 11/12.
-- Detecção automática de amd64/x86-64 e arm64/aarch64.
-- Detecção de IP público por múltiplos serviços e metadata v2 da Oracle Cloud.
-- Detecção de provedor, IP privado, RAM, swap e espaço livre.
-- Resolução recomendada de acordo com a memória disponível.
-- Criação inteligente de swap com modos automático, ativado ou desativado.
-- Recuperação e repetição automática de operações APT.
-- Fallback automático de Google Chrome para Chromium.
-- Backup de configuração antes de instalação, reparação e alterações críticas.
-- Integridade do pacote validada pelo `MANIFEST.sha256` no bootstrap.
-- Manager redesenhado com painel de URL, IP, serviços, RAM, swap e disco.
-- Menu para alterar usuário/senha web, senha VNC, usuário Linux e resolução.
-- Menu para alternar entre acesso por IP e por domínio.
-- Controle intuitivo de iniciar, parar, reiniciar e ativar serviços no boot.
-- Reparação automática de permissões, arquivos, credenciais ausentes e serviços.
-- Atualização/reparação direta pelo GitHub preservando a sessão do WhatsApp.
-- Menu de logs por componente e acompanhamento ao vivo.
-- Desinstalação assistida com preservação padrão do perfil.
-- Senhas continuam visíveis durante digitação e revisão.
-- noVNC configurado para toque em celular, ponteiro visível e reconexão.
+- Arquivos ocultos deixaram de ser obrigatórios.
+- Checksums complementares não bloqueiam uma estrutura válida.
+- Mantida validação obrigatória de estrutura e sintaxe Bash.
 
-## 2.1.1
+## 2.2.0 — Instalador inteligente
 
-- Senhas visíveis durante a instalação e alteração posterior.
-- Repositório padrão configurado como `DuiBR/whatsapp-remote-vps`.
-
-## 2.1.0
-
-- Bootstrap de instalação e atualização pelo GitHub.
-
-## 2.0.0
-
-- Compatibilidade universal Ubuntu/Debian, amd64/arm64.
+- Menu de instalação e Manager.
+- Instalação automática ou personalizada.
+- Detecção de sistema, arquitetura, IP, provedor, RAM e disco.
+- Reparação, atualização, logs, status e desinstalação.

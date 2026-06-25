@@ -1,12 +1,13 @@
-# Validação
+# Validação da versão 2.3.0
 
-Versão 2.2.1 validada com:
+Validações executadas antes da geração do pacote:
 
-- `bash -n` em todos os scripts principais;
-- verificação da presença dos arquivos essenciais;
-- manifesto SHA-256 limitado aos scripts do projeto;
-- simulação de upload sem `.gitignore` e `.gitattributes`;
-- simulação de checksum divergente com continuidade após validação estrutural;
-- geração e leitura do pacote ZIP.
+- `bash -n` em todos os scripts Bash;
+- verificação dos arquivos obrigatórios;
+- teste da leitura e preservação das credenciais antigas;
+- verificação do wrapper global `menu`;
+- validação das opções do desinstalador;
+- geração de `MANIFEST.sha256` para scripts essenciais;
+- teste de integridade do arquivo ZIP.
 
-O `MANIFEST.sha256` é complementar. A proteção principal do bootstrap é a origem HTTPS do repositório configurado, combinada com validação de estrutura e sintaxe antes da execução.
+A instalação completa deve ser validada na VPS, pois serviços systemd, Nginx, VNC e pacotes APT dependem do sistema real.

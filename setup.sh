@@ -199,4 +199,4 @@ if (( USE_TTY == 1 )); then
 else
   bash ./install.sh "${INSTALL_ARGS[@]}"
 fi
-info "Operação concluída. Abra o menu com: sudo whatsapp-remote"
+info "Operação concluída. Abra o menu digitando: menu"

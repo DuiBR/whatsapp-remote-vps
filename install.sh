@@ -107,6 +107,7 @@ elif [[ -r /etc/whatsapp-remote.conf ]]; then
   BROWSER_BIN="${BROWSER_BIN:-/usr/bin/google-chrome-stable}"
   BROWSER_TYPE="${BROWSER_TYPE:-Google Chrome Stable}"
   LOW_RAM=1
+  APP_USER_MANAGED=0
   info "Instalação antiga encontrada; ela será migrada preservando a sessão."
 fi
 
@@ -468,7 +469,12 @@ install_browser
 ok "Navegador selecionado: $BROWSER_TYPE"
 
 stage 4 7 "Criando usuário, perfil persistente e credenciais"
-if ! id "$APP_USER" >/dev/null 2>&1; then useradd -m -U -s /bin/bash "$APP_USER"; fi
+if ! id "$APP_USER" >/dev/null 2>&1; then
+  useradd -m -U -s /bin/bash "$APP_USER"
+  APP_USER_MANAGED=1
+else
+  APP_USER_MANAGED="${APP_USER_MANAGED:-0}"
+fi
 APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
 APP_GROUP="$(id -gn "$APP_USER")"
 APP_UID="$(id -u "$APP_USER")"
@@ -499,6 +505,7 @@ if [[ "$(readlink -f "$SCRIPT_DIR")" != "$(readlink -f "$INSTALL_DIR")" ]]; then
 fi
 chmod 755 "$INSTALL_DIR"/*.sh "$INSTALL_DIR/lib/common.sh"
 ln -sfn "$INSTALL_DIR/manage.sh" /usr/local/sbin/whatsapp-remote
+install_menu_command
 save_config
 render_runtime_scripts
 render_openbox_config
@@ -557,7 +564,7 @@ printf '  Navegador:          %s\n' "$BROWSER_TYPE"
 printf '  Usuário desktop:    %s\n' "$APP_USER"
 printf '  URL de acesso:      %s\n' "$(access_url)"
 printf '  Credenciais:        %s\n' "$CREDENTIALS_FILE"
-printf '  Menu/Manager:       sudo whatsapp-remote\n'
+printf '  Menu/Manager:       menu  (ou sudo whatsapp-remote)\n'
 ui_rule
 printf '\n'
 if [[ "$DETECTED_PROVIDER" == "Oracle Cloud" ]]; then

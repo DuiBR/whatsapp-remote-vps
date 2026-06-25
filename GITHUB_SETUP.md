@@ -1,62 +1,39 @@
 # Publicação no GitHub
 
-Repositório configurado no projeto:
+Repositório esperado:
 
 ```text
 https://github.com/DuiBR/whatsapp-remote-vps
 ```
 
-## Enviar a versão para o repositório
+Envie o conteúdo desta pasta diretamente para a raiz do repositório.
 
-Extraia o ZIP e copie o conteúdo para a raiz do repositório:
+## Atualização pelo terminal
 
 ```bash
+unzip whatsapp-remote-github-v2.3.0.zip
 git clone https://github.com/DuiBR/whatsapp-remote-vps.git
-cp -a whatsapp-remote-github-v2.2.0/. whatsapp-remote-vps/
+cp -a whatsapp-remote-github-v2.3.0/. whatsapp-remote-vps/
 cd whatsapp-remote-vps
-
 git add -A
-git commit -m "WhatsApp Remote VPS v2.2.0 — instalador inteligente e Manager"
+git commit -m "WhatsApp Remote VPS v2.3.0"
 git push origin main
 ```
 
-Os arquivos `setup.sh`, `install.sh` e a pasta `lib` devem aparecer diretamente na raiz do GitHub.
-
-## Testar o link
+## Instalação
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh | sudo bash
 ```
 
-## Criar uma versão fixa
+## Atualizar uma máquina existente
 
 ```bash
-git tag -a v2.2.0 -m "WhatsApp Remote VPS v2.2.0"
-git push origin v2.2.0
+curl -fsSL "https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh?v=2.3.0" | sudo bash -s -- --repair --auto
 ```
 
-Instalar a tag:
+Depois da atualização, o Manager abre digitando:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo bash -s -- --ref v2.2.0
+menu
 ```
-
-## Repositório privado
-
-Para repositório privado, exporte temporariamente um token com permissão de leitura:
-
-```bash
-export WR_GITHUB_TOKEN='TOKEN'
-curl -fsSL https://raw.githubusercontent.com/DuiBR/whatsapp-remote-vps/main/setup.sh |
-sudo -E bash
-unset WR_GITHUB_TOKEN
-```
-
-Nunca grave tokens dentro dos scripts ou faça commit de credenciais.
-
-## Observação para upload pelo celular
-
-Os arquivos `.gitignore` e `.gitattributes` podem não aparecer no seletor do navegador por serem ocultos. Eles são opcionais. Não crie esses arquivos manualmente apenas para concluir a instalação.
-
-Envie obrigatoriamente os scripts, a pasta `lib` e o arquivo `MANIFEST.sha256` atualizado.
