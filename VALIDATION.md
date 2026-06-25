@@ -1,4 +1,4 @@
-# ✅ Validação da versão 2.5.0
+# ✅ Validação da versão 2.5.1
 
 Validações executadas antes da geração do pacote:
 

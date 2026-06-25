@@ -288,6 +288,32 @@ repair_installation() {
   return 0
 }
 
+repair_browser_only() {
+  ui_header "Reparar navegador/Chrome"
+  detect_platform
+  load_config
+  info "Corrigindo sandbox, DBus, diretórios, travas e serviço do navegador..."
+  render_runtime_scripts
+  render_systemd_units
+  save_config
+  /usr/local/sbin/whatsapp-browser-preflight
+  systemctl daemon-reload
+  systemctl enable "$SERVICE_BROWSER" >/dev/null
+  systemctl reset-failed "$SERVICE_BROWSER" 2>/dev/null || true
+  systemctl restart "$SERVICE_BROWSER"
+  if wait_for_browser 75; then
+    ok "Navegador iniciado corretamente."
+    echo "Sandbox: $(browser_sandbox_status)"
+    echo "WhatsApp: $(whatsapp_status_message)"
+  else
+    warn "O navegador ainda não iniciou."
+    echo "Causa detectada: $(browser_failure_detail)"
+    echo
+    echo "Últimas linhas do log dedicado:"
+    tail -n 40 "$BROWSER_LOG_FILE" 2>/dev/null || true
+  fi
+}
+
 update_from_github() {
   load_config
   local repository="${GITHUB_REPOSITORY:-$GITHUB_REPOSITORY_DEFAULT}"
@@ -323,6 +349,7 @@ show_logs_menu() {
     echo "  6) Acompanhar navegador ao vivo (Ctrl+C para sair)"
     echo "  7) Acompanhar Desktop/VNC ao vivo (Ctrl+C para sair)"
     echo "  8) Verificar conexão atual do WhatsApp"
+    echo "  9) Log dedicado do navegador — últimas 120 linhas"
     echo "  0) Voltar"
     echo
     read -r -p "Escolha: " choice
@@ -335,6 +362,7 @@ show_logs_menu() {
       6) journalctl -u "$SERVICE_BROWSER" -f || true ;;
       7) journalctl -u "$SERVICE_DESKTOP" -f || true ;;
       8) load_config; echo "WhatsApp Web: $(whatsapp_status_message)"; ui_pause ;;
+      9) load_config; tail -n 120 "$BROWSER_LOG_FILE" 2>/dev/null || warn "Log ainda não foi criado."; ui_pause ;;
       0) return 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -472,6 +500,7 @@ main_menu() {
     echo " 12) Reinstalar tudo do zero"
     echo " 13) Desinstalar"
     echo " 14) Verificar conexão do WhatsApp Web"
+    echo " 15) Reparar somente o navegador/Chrome"
     echo "  0) Sair"
     echo
     read -r -p "Escolha: " option
@@ -490,6 +519,7 @@ main_menu() {
       12) reinstall_from_scratch ;;
       13) run_uninstall ;;
       14) load_config; ui_header "Conexão do WhatsApp Web"; echo "Status: $(whatsapp_status_message)"; echo; echo "Observação: a detecção é local e não envia dados da sessão para serviços externos."; ui_pause ;;
+      15) repair_browser_only; ui_pause ;;
       0) exit 0 ;;
       *) warn "Opção inválida."; ui_pause ;;
     esac
@@ -519,6 +549,7 @@ Comandos:
   logs                 Abre o menu de logs
   reinstall            Reinstala tudo do zero e apaga a sessão do WhatsApp
   whatsapp-status      Verifica se a sessão está conectada, aguardando QR ou offline
+  browser-repair       Corrige sandbox, DBus e reinicia apenas o navegador
   uninstall            Abre o desinstalador
   help                 Exibe esta ajuda
 HELP
@@ -541,6 +572,7 @@ case "${1:-menu}" in
   update) update_from_github ;;
   logs) show_logs_menu ;;
   whatsapp-status) load_config; echo "$(whatsapp_status_message)" ;;
+  browser-repair) repair_browser_only ;;
   reinstall) reinstall_from_scratch ;;
   uninstall) run_uninstall ;;
   help|-h|--help) help_text ;;

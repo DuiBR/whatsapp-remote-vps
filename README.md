@@ -1,6 +1,6 @@
 # 🟢 WhatsApp Remote VPS
 
-> **Versão 2.5.0:** navegador supervisionado separadamente e verificação local da conexão do WhatsApp.
+> **Versão 2.5.1:** navegador supervisionado separadamente e verificação local da conexão do WhatsApp.
 >
 > Execute o **WhatsApp Web 24 horas por dia** em uma VPS com desktop remoto acessível pelo navegador do celular ou computador.
 
@@ -465,7 +465,7 @@ sudo whatsapp-remote repair
 
 ### O WhatsApp Web não está rodando
 
-A versão 2.5.0 usa um serviço exclusivo para o navegador. Verifique:
+A versão 2.5.1 usa um serviço exclusivo para o navegador. Verifique:
 
 ```bash
 sudo systemctl status whatsapp-browser.service --no-pager
@@ -497,3 +497,25 @@ Confirme TCP 443 no firewall do provedor. As regras do NSG/Security List não po
 - O projeto mantém o navegador ativo, mas o próprio WhatsApp pode solicitar uma nova vinculação de dispositivo.
 - Não use a VPS para automações que violem os termos do WhatsApp.
 - Faça backup antes de reinstalar tudo do zero.
+
+## 🧰 Correção automática do navegador
+
+A versão 2.5.1 inclui um preflight que corrige automaticamente o `chrome-sandbox`, prepara DBus e remove travas antigas antes de iniciar o navegador. Se o Chrome não abrir:
+
+```bash
+menu
+```
+
+Escolha **15) Reparar somente o navegador/Chrome**. Também é possível usar:
+
+```bash
+sudo whatsapp-remote browser-repair
+```
+
+O diagnóstico informa o modo de sandbox e mantém um log dedicado em:
+
+```text
+/var/log/whatsapp-remote/browser.log
+```
+
+O modo sem sandbox permanece bloqueado por padrão por segurança.

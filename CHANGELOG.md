@@ -1,3 +1,17 @@
+# Changelog
+
+## 2.5.1 — Correção de core dump do Chrome
+
+- Corrige automaticamente proprietário e permissão `4755` do `chrome-sandbox`.
+- Adiciona preflight executado como root antes de cada inicialização do navegador.
+- Inicia o Chrome dentro de uma sessão D-Bus dedicada.
+- Adiciona fallback seguro para sandbox por user namespace quando a tentativa padrão falha rapidamente.
+- Mantém o modo sem sandbox desativado por padrão e sinaliza qualquer uso emergencial.
+- Cria log dedicado em `/var/log/whatsapp-remote/browser.log`.
+- Exibe no status o modo de sandbox e a causa real de falhas/core dump.
+- Adiciona `menu` → **Reparar somente o navegador/Chrome**.
+- Desabilita core dumps do serviço para não ocupar o disco da VPS.
+
 # 📋 Changelog
 
 ## 2.5.0 — Navegador supervisionado e status do WhatsApp

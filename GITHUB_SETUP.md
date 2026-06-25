@@ -11,12 +11,12 @@ Envie o conteúdo desta pasta diretamente para a raiz do repositório.
 ## Atualizar pelo terminal
 
 ```bash
-unzip whatsapp-remote-github-v2.5.0.zip
+unzip whatsapp-remote-github-v2.5.1.zip
 git clone https://github.com/DuiBR/whatsapp-remote-vps.git
-cp -a whatsapp-remote-github-v2.5.0/. whatsapp-remote-vps/
+cp -a whatsapp-remote-github-v2.5.1/. whatsapp-remote-vps/
 cd whatsapp-remote-vps
 git add -A
-git commit -m "WhatsApp Remote VPS v2.5.0"
+git commit -m "WhatsApp Remote VPS v2.5.1"
 git push origin main
 ```
 
