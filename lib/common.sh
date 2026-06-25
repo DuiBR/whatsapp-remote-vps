@@ -2,7 +2,7 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.2.0"
+PROJECT_VERSION="2.3.0"
 GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
 GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
@@ -17,6 +17,7 @@ NGINX_SITE="/etc/nginx/sites-available/whatsapp-remote"
 NGINX_LINK="/etc/nginx/sites-enabled/whatsapp-remote"
 HTPASSWD_FILE="/etc/nginx/.htpasswd-whatsapp"
 SSL_DIR="/etc/nginx/ssl-whatsapp"
+MENU_COMMAND="/usr/local/bin/menu"
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
   C_RESET=$'\033[0m'
@@ -72,7 +73,8 @@ command_exists() { command -v "$1" >/dev/null 2>&1; }
 shell_quote() { printf '%q' "$1"; }
 
 is_valid_linux_user() {
-  [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]]
+  [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || return 1
+  [[ "$1" != "root" ]]
 }
 
 is_valid_web_user() {
@@ -293,6 +295,7 @@ load_config() {
   : "${PROFILE_DIR:=${APP_HOME}/.config/chrome-whatsapp}"
   : "${APP_UID:?APP_UID ausente}"
   : "${APP_GID:?APP_GID ausente}"
+  : "${APP_USER_MANAGED:=0}"
   : "${DISPLAY_NUMBER:=1}"
   : "${GEOMETRY:=1280x720}"
   : "${VNC_PORT:=$((5900 + DISPLAY_NUMBER))}"
@@ -323,6 +326,7 @@ save_config() {
     printf 'PROFILE_DIR=%q\n' "$PROFILE_DIR"
     printf 'APP_UID=%q\n' "$APP_UID"
     printf 'APP_GID=%q\n' "$APP_GID"
+    printf 'APP_USER_MANAGED=%q\n' "${APP_USER_MANAGED:-0}"
     printf 'DISPLAY_NUMBER=%q\n' "$DISPLAY_NUMBER"
     printf 'GEOMETRY=%q\n' "$GEOMETRY"
     printf 'VNC_PORT=%q\n' "$VNC_PORT"
@@ -371,28 +375,84 @@ set_web_credentials() {
   WEB_USER="$username"
 }
 
+credential_value() {
+  local label="$1" value=""
+  [[ -r "$CREDENTIALS_FILE" ]] || return 1
+  value="$(awk -v prefix="${label}: " 'index($0,prefix)==1 {sub(prefix,""); print; exit}' "$CREDENTIALS_FILE" 2>/dev/null || true)"
+  [[ -n "$value" && "$value" != não\ recuperável* && "$value" != não\ armazenada* ]] || return 1
+  printf '%s' "$value"
+}
+
 write_credentials_file() {
   local vnc_password="${1:-}" web_password="${2:-}"
+  local previous_vnc="" previous_web=""
+
+  previous_vnc="$(credential_value 'Senha VNC' || true)"
+  previous_web="$(credential_value 'Senha web' || true)"
+  [[ -n "$vnc_password" ]] || vnc_password="$previous_vnc"
+  [[ -n "$web_password" ]] || web_password="$previous_web"
+
   umask 077
   {
     echo "$PROJECT_NAME $PROJECT_VERSION"
     echo "Atualizado em: $(date -Is)"
     echo "URL: $(access_url)"
+    echo
+    echo "ACESSO WEB"
     echo "Usuário web: $WEB_USER"
     if [[ -n "$web_password" ]]; then
       echo "Senha web: $web_password"
     else
-      echo "Senha web: não recuperável; redefina com 'whatsapp-remote web-credentials'"
+      echo "Senha web: não armazenada; redefina com 'menu' ou 'whatsapp-remote web-credentials'"
     fi
+    echo
+    echo "DESKTOP REMOTO"
     echo "Usuário do desktop Linux: $APP_USER"
     if [[ -n "$vnc_password" ]]; then
       echo "Senha VNC: $vnc_password"
     else
-      echo "Senha VNC: não recuperável; redefina com 'whatsapp-remote vnc-password'"
+      echo "Senha VNC: não armazenada; redefina com 'menu' ou 'whatsapp-remote vnc-password'"
     fi
+    echo
+    echo "Observação: o noVNC normalmente solicita apenas a senha VNC."
     echo "Observação: o protocolo VNC clássico considera somente os primeiros 8 caracteres."
   } > "$CREDENTIALS_FILE"
   chmod 600 "$CREDENTIALS_FILE"
+}
+
+install_menu_command() {
+  local target="$MENU_COMMAND" backup=""
+  if [[ -e "$target" ]] && ! grep -q 'WHATSAPP_REMOTE_MENU_WRAPPER' "$target" 2>/dev/null; then
+    backup="${target}.backup.$(date +%Y%m%d-%H%M%S)"
+    cp -a "$target" "$backup"
+    warn "Já existia um comando 'menu'. Backup criado em: $backup"
+  fi
+
+  cat > "$target" <<'MENU_WRAPPER'
+#!/usr/bin/env bash
+# WHATSAPP_REMOTE_MENU_WRAPPER
+set -e
+MANAGER="/usr/local/sbin/whatsapp-remote"
+if [[ ! -x "$MANAGER" ]]; then
+  echo "WhatsApp Remote VPS ainda não está instalado corretamente." >&2
+  exit 1
+fi
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+  exec "$MANAGER" menu "$@"
+fi
+if command -v sudo >/dev/null 2>&1; then
+  exec sudo "$MANAGER" menu "$@"
+fi
+echo "Este menu exige privilégios de administrador. Execute: sudo whatsapp-remote" >&2
+exit 1
+MENU_WRAPPER
+  chmod 755 "$target"
+}
+
+remove_menu_command() {
+  if [[ -f "$MENU_COMMAND" ]] && grep -q 'WHATSAPP_REMOTE_MENU_WRAPPER' "$MENU_COMMAND" 2>/dev/null; then
+    rm -f "$MENU_COMMAND"
+  fi
 }
 
 access_url() {
