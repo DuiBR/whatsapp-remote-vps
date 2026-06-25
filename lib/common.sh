@@ -2,7 +2,7 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.3.0"
+PROJECT_VERSION="2.4.0"
 GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
 GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
@@ -287,8 +287,13 @@ backup_current_config() {
 
 load_config() {
   [[ -r "$CONFIG_FILE" ]] || die "Configuração não encontrada: $CONFIG_FILE"
+  local runtime_project_name="$PROJECT_NAME"
+  local runtime_project_version="$PROJECT_VERSION"
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
+  # A configuração antiga não pode sobrescrever a versão do código instalado.
+  PROJECT_NAME="$runtime_project_name"
+  PROJECT_VERSION="$runtime_project_version"
   : "${APP_USER:?APP_USER ausente}"
   : "${APP_GROUP:?APP_GROUP ausente}"
   : "${APP_HOME:?APP_HOME ausente}"
@@ -316,7 +321,6 @@ save_config() {
   local tmp
   tmp="$(mktemp)"
   {
-    printf 'PROJECT_VERSION=%q\n' "$PROJECT_VERSION"
     printf 'OS_ID=%q\n' "$OS_ID"
     printf 'OS_VERSION=%q\n' "$OS_VERSION"
     printf 'ARCH=%q\n' "$ARCH"
@@ -418,6 +422,23 @@ write_credentials_file() {
     echo "Observação: o protocolo VNC clássico considera somente os primeiros 8 caracteres."
   } > "$CREDENTIALS_FILE"
   chmod 600 "$CREDENTIALS_FILE"
+}
+
+install_manager_command() {
+  local target="/usr/local/sbin/whatsapp-remote"
+  rm -f "$target"
+  cat > "$target" <<'MANAGER_WRAPPER'
+#!/usr/bin/env bash
+# WHATSAPP_REMOTE_MANAGER_WRAPPER
+set -Eeuo pipefail
+TARGET="/opt/whatsapp-remote/manage.sh"
+if [[ ! -x "$TARGET" ]]; then
+  echo "WhatsApp Remote VPS não está instalado corretamente: $TARGET não encontrado." >&2
+  exit 1
+fi
+exec "$TARGET" "$@"
+MANAGER_WRAPPER
+  chmod 755 "$target"
 }
 
 install_menu_command() {
@@ -768,6 +789,22 @@ wait_port() {
   return 1
 }
 
+browser_is_running() {
+  pgrep -u "$APP_USER" -af 'chrome|chromium' 2>/dev/null \
+    | grep -v 'crashpad_handler' \
+    | grep -q -- '--user-data-dir='
+}
+
+wait_for_browser() {
+  local timeout="${1:-45}" elapsed=0
+  while (( elapsed < timeout )); do
+    if browser_is_running; then return 0; fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
 restart_stack() {
   systemctl stop "$SERVICE_NOVNC" 2>/dev/null || true
   systemctl restart "$SERVICE_DESKTOP"
@@ -781,6 +818,7 @@ restart_stack() {
     die "A porta noVNC ${NOVNC_PORT} não abriu."
   }
   if command_exists nginx && nginx -t >/dev/null 2>&1; then systemctl restart nginx; fi
+  wait_for_browser 45 || warn "O navegador ainda não iniciou; consulte o diagnóstico e o log do desktop."
 }
 
 start_stack() {
@@ -789,6 +827,7 @@ start_stack() {
   systemctl start "$SERVICE_NOVNC"
   wait_port 127.0.0.1 "$NOVNC_PORT" 45 || return 1
   systemctl start nginx
+  wait_for_browser 45 || return 1
 }
 
 stop_stack() {
@@ -802,40 +841,219 @@ service_badge() {
   else printf '%b%s%b' "$C_RED" "${state:-inativo}" "$C_RESET"; fi
 }
 
+port_is_listening() {
+  local port="$1"
+  ss -lntH 2>/dev/null | awk -v suffix=":${port}" '$4 ~ (suffix "$" ) {found=1} END {exit !found}'
+}
+
+port_is_publicly_exposed() {
+  local port="$1" address
+  while read -r address; do
+    [[ -n "$address" ]] || continue
+    case "$address" in
+      127.0.0.1:"$port"|\[::1\]:"$port"|::1:"$port") ;;
+      *) return 0 ;;
+    esac
+  done < <(ss -lntH 2>/dev/null | awk -v suffix=":${port}" '$4 ~ (suffix "$" ) {print $4}')
+  return 1
+}
+
 port_badge() {
   local port="$1"
-  if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
+  if port_is_listening "$port"; then
     printf '%bATIVA%b' "$C_GREEN" "$C_RESET"
   else
     printf '%bINATIVA%b' "$C_RED" "$C_RESET"
   fi
 }
 
+service_failure_detail() {
+  local service="$1" result message
+  result="$(systemctl show "$service" -p Result --value 2>/dev/null || true)"
+  message="$(journalctl -u "$service" -p err --since '-30 minutes' -n 1 --no-pager -o cat 2>/dev/null | tr '\n' ' ' | cut -c1-180 || true)"
+  if [[ -n "$message" ]]; then
+    printf 'resultado=%s; %s' "${result:-desconhecido}" "$message"
+  else
+    printf 'resultado=%s' "${result:-desconhecido}"
+  fi
+}
+
+HEALTH_ERRORS=()
+HEALTH_WARNINGS=()
+health_error() { HEALTH_ERRORS+=("$*"); }
+health_warning() { HEALTH_WARNINGS+=("$*"); }
+
+collect_health_issues() {
+  HEALTH_ERRORS=()
+  HEALTH_WARNINGS=()
+
+  local current_ip="" mem_mb swap_mb available_mb disk_mb cert_file="" config_mode="" profile_owner=""
+  current_ip="$(detect_public_ip || true)"
+  mem_mb="$(memory_mb 2>/dev/null || echo 0)"
+  swap_mb="$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  available_mb="$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  disk_mb="$(disk_free_mb 2>/dev/null || echo 0)"
+
+  [[ -r "$CONFIG_FILE" ]] || health_error "Arquivo de configuração ausente ou ilegível: $CONFIG_FILE"
+  id "$APP_USER" >/dev/null 2>&1 || health_error "Usuário desktop '$APP_USER' não existe."
+  [[ -d "$APP_HOME" ]] || health_error "Diretório do usuário desktop não existe: $APP_HOME"
+  [[ -d "$PROFILE_DIR" ]] || health_error "Perfil persistente do navegador não existe: $PROFILE_DIR"
+  [[ -s "$APP_HOME/.vnc/passwd" ]] || health_error "Senha VNC ausente: $APP_HOME/.vnc/passwd"
+  [[ -s "$HTPASSWD_FILE" ]] || health_error "Autenticação web ausente: $HTPASSWD_FILE"
+  [[ -x "$BROWSER_BIN" ]] || health_error "Navegador configurado não foi encontrado ou não é executável: $BROWSER_BIN"
+  [[ -x /usr/local/bin/whatsapp-desktop-start ]] || health_error "Inicializador do desktop está ausente."
+  [[ -x /usr/local/bin/whatsapp-browser ]] || health_error "Inicializador do navegador está ausente."
+  [[ -x /usr/local/sbin/whatsapp-remote ]] || health_warning "Comando 'whatsapp-remote' ausente; a reparação pode recriá-lo."
+  [[ -x "$MENU_COMMAND" ]] || health_warning "Comando global 'menu' ausente; a reparação pode recriá-lo."
+
+  if [[ -r "$CONFIG_FILE" ]]; then
+    config_mode="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || true)"
+    [[ -z "$config_mode" || "${config_mode: -1}" == "0" ]] || health_warning "A configuração pode ser lida por outros usuários (permissão $config_mode)."
+  fi
+  if [[ -d "$PROFILE_DIR" ]] && id "$APP_USER" >/dev/null 2>&1; then
+    profile_owner="$(stat -c '%U' "$PROFILE_DIR" 2>/dev/null || true)"
+    [[ -z "$profile_owner" || "$profile_owner" == "$APP_USER" ]] || health_error "O perfil do navegador pertence a '$profile_owner', mas deveria pertencer a '$APP_USER'."
+  fi
+
+  local service
+  for service in "$SERVICE_DESKTOP" "$SERVICE_NOVNC" nginx; do
+    if ! systemctl is-active --quiet "$service" 2>/dev/null; then
+      health_error "Serviço $service está inativo ($(service_failure_detail "$service"))."
+    fi
+    if ! systemctl is-enabled --quiet "$service" 2>/dev/null; then
+      health_warning "Serviço $service não está habilitado para iniciar com a VPS."
+    fi
+  done
+
+  port_is_listening "$VNC_PORT" || health_error "Porta VNC interna $VNC_PORT não está escutando."
+  port_is_listening "$NOVNC_PORT" || health_error "Porta noVNC interna $NOVNC_PORT não está escutando."
+  port_is_listening 443 || health_error "Porta HTTPS 443 não está escutando."
+  port_is_publicly_exposed "$VNC_PORT" && health_error "RISCO DE SEGURANÇA: a porta VNC $VNC_PORT está exposta fora do localhost."
+  port_is_publicly_exposed "$NOVNC_PORT" && health_error "RISCO DE SEGURANÇA: a porta noVNC $NOVNC_PORT está exposta fora do localhost."
+
+  nginx -t >/dev/null 2>&1 || health_error "A configuração do Nginx contém erro; execute 'nginx -t' para detalhes."
+  browser_is_running || health_error "Chrome/Chromium não está em execução; o WhatsApp Web não ficará ativo."
+
+  if [[ "$ACCESS_MODE" == "ip" ]]; then
+    cert_file="$SSL_DIR/whatsapp-ip.crt"
+    if [[ -n "$PUBLIC_IP" && -n "$current_ip" && "$PUBLIC_IP" != "$current_ip" ]]; then
+      health_error "O IP público mudou: configurado $PUBLIC_IP, atual $current_ip. Reconfigure o acesso por IP."
+    fi
+  elif [[ "$ACCESS_MODE" == "domain" && -n "$DOMAIN" ]]; then
+    cert_file="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+  fi
+
+  if [[ -n "$cert_file" ]]; then
+    if [[ ! -r "$cert_file" ]]; then
+      health_error "Certificado HTTPS ausente: $cert_file"
+    elif command_exists openssl; then
+      openssl x509 -checkend 0 -noout -in "$cert_file" >/dev/null 2>&1 || health_error "O certificado HTTPS está vencido ou inválido."
+      if openssl x509 -checkend 0 -noout -in "$cert_file" >/dev/null 2>&1 \
+        && ! openssl x509 -checkend 1209600 -noout -in "$cert_file" >/dev/null 2>&1; then
+        health_warning "O certificado HTTPS vence em menos de 14 dias."
+      fi
+    fi
+  fi
+
+  (( mem_mb > 1600 || swap_mb > 0 )) || health_warning "A VPS possui pouca RAM (${mem_mb} MB) e nenhuma swap ativa."
+  (( available_mb >= 100 )) || health_warning "Memória disponível muito baixa: ${available_mb} MB."
+  if (( disk_mb < 1024 )); then
+    health_error "Espaço livre crítico em /: ${disk_mb} MB."
+  elif (( disk_mb < 3072 )); then
+    health_warning "Pouco espaço livre em /: ${disk_mb} MB."
+  fi
+  [[ -r "$CREDENTIALS_FILE" ]] || health_warning "Arquivo de credenciais não encontrado; as senhas podem precisar ser redefinidas."
+  [[ -n "$current_ip" ]] || health_warning "Não foi possível detectar o IP público atual."
+}
+
+show_health_summary() {
+  local mode="${1:-full}" limit=999 shown=0 item
+  [[ "$mode" == "compact" ]] && limit=6
+  collect_health_issues
+
+  if (( ${#HEALTH_ERRORS[@]} == 0 && ${#HEALTH_WARNINGS[@]} == 0 )); then
+    printf '%bSaúde do sistema: OK — nenhum problema detectado.%b\n' "$C_GREEN" "$C_RESET"
+    return 0
+  fi
+
+  printf '%bSaúde do sistema: %s erro(s), %s aviso(s).%b\n' \
+    "$C_BOLD" "${#HEALTH_ERRORS[@]}" "${#HEALTH_WARNINGS[@]}" "$C_RESET"
+  for item in "${HEALTH_ERRORS[@]}"; do
+    (( shown >= limit )) && break
+    printf '  %b✖ ERRO:%b %s\n' "$C_RED" "$C_RESET" "$item"
+    shown=$((shown + 1))
+  done
+  for item in "${HEALTH_WARNINGS[@]}"; do
+    (( shown >= limit )) && break
+    printf '  %b⚠ AVISO:%b %s\n' "$C_YELLOW" "$C_RESET" "$item"
+    shown=$((shown + 1))
+  done
+  if (( shown < ${#HEALTH_ERRORS[@]} + ${#HEALTH_WARNINGS[@]} )); then
+    printf '  … use a opção de status/diagnóstico para visualizar todos os problemas.\n'
+  fi
+  printf '  Ação recomendada: execute %bReparação automática%b pelo menu.\n' "$C_BOLD" "$C_RESET"
+  return 1
+}
+
+certificate_expiry_text() {
+  local cert_file=""
+  if [[ "$ACCESS_MODE" == "domain" && -n "$DOMAIN" ]]; then
+    cert_file="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+  elif [[ "$ACCESS_MODE" == "ip" ]]; then
+    cert_file="$SSL_DIR/whatsapp-ip.crt"
+  fi
+  if [[ -r "$cert_file" ]] && command_exists openssl; then
+    openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | sed 's/^notAfter=//' || printf 'indisponível'
+  else
+    printf 'não encontrado'
+  fi
+}
+
 show_status() {
   load_config
-  local current_ip uptime_text
+  local current_ip private_ip uptime_text profile_size browser_state auto_start load_text cpu_count
   current_ip="$(detect_public_ip || true)"
+  private_ip="$(detect_private_ip || true)"
   uptime_text="$(uptime -p 2>/dev/null || true)"
-  printf '%-27s %s\n' "Projeto:" "$PROJECT_NAME $PROJECT_VERSION"
-  printf '%-27s %s\n' "Sistema:" "${OS_ID} ${OS_VERSION} (${ARCH})"
-  printf '%-27s %s\n' "Provedor detectado:" "$(detect_cloud_provider)"
-  printf '%-27s %s\n' "IP público atual:" "${current_ip:-não detectado}"
-  printf '%-27s %s\n' "URL configurada:" "$(access_url)"
-  printf '%-27s %s\n' "Usuário web:" "$WEB_USER"
-  printf '%-27s %s\n' "Usuário desktop:" "$APP_USER"
-  printf '%-27s %s\n' "Navegador:" "$BROWSER_TYPE"
-  printf '%-27s %s\n' "Resolução:" "$GEOMETRY"
-  printf '%-27s %b\n' "Desktop/VNC:" "$(service_badge "$SERVICE_DESKTOP")"
-  printf '%-27s %b\n' "noVNC:" "$(service_badge "$SERVICE_NOVNC")"
-  printf '%-27s %b\n' "Nginx:" "$(service_badge nginx)"
-  printf '%-27s %b\n' "Porta VNC ${VNC_PORT}:" "$(port_badge "$VNC_PORT")"
-  printf '%-27s %b\n' "Porta noVNC ${NOVNC_PORT}:" "$(port_badge "$NOVNC_PORT")"
-  printf '%-27s %b\n' "Porta HTTPS 443:" "$(port_badge 443)"
-  printf '%-27s %s\n' "Chrome/Chromium:" "$(pgrep -u "$APP_USER" -f 'chrome|chromium' >/dev/null 2>&1 && echo ativo || echo inativo)"
-  printf '%-27s %s\n' "Memória usada/total:" "$(free -h | awk '/Mem:/ {print $3 "/" $2}')"
-  printf '%-27s %s\n' "Swap usada/total:" "$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
-  printf '%-27s %s\n' "Disco livre em /:" "$(df -h / | awk 'NR==2 {print $4}')"
-  printf '%-27s %s\n' "Tempo ligado:" "${uptime_text:-indisponível}"
+  profile_size="$(du -sh "$PROFILE_DIR" 2>/dev/null | awk '{print $1}' || true)"
+  browser_state="$(browser_is_running && echo ativo || echo inativo)"
+  if systemctl is-enabled --quiet "$SERVICE_DESKTOP" 2>/dev/null \
+    && systemctl is-enabled --quiet "$SERVICE_NOVNC" 2>/dev/null \
+    && systemctl is-enabled --quiet nginx 2>/dev/null; then auto_start="ativada"; else auto_start="incompleta"; fi
+  load_text="$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null || true)"
+  cpu_count="$(nproc 2>/dev/null || echo '?')"
+
+  printf '%-29s %s\n' "Projeto:" "$PROJECT_NAME $PROJECT_VERSION"
+  printf '%-29s %s\n' "Hostname:" "$(hostname 2>/dev/null || echo indisponível)"
+  printf '%-29s %s\n' "Sistema:" "${OS_ID} ${OS_VERSION} (${ARCH})"
+  printf '%-29s %s\n' "Kernel:" "$(uname -r 2>/dev/null || echo indisponível)"
+  printf '%-29s %s\n' "CPU / carga:" "${cpu_count} núcleo(s) / ${load_text:-indisponível}"
+  printf '%-29s %s\n' "Provedor detectado:" "$(detect_cloud_provider)"
+  printf '%-29s %s\n' "IP público atual:" "${current_ip:-não detectado}"
+  printf '%-29s %s\n' "IP privado:" "${private_ip:-não detectado}"
+  printf '%-29s %s\n' "URL configurada:" "$(access_url)"
+  printf '%-29s %s\n' "Modo de acesso:" "$ACCESS_MODE"
+  printf '%-29s %s\n' "Certificado vence em:" "$(certificate_expiry_text)"
+  printf '%-29s %s\n' "Usuário web:" "$WEB_USER"
+  printf '%-29s %s\n' "Usuário desktop:" "$APP_USER"
+  printf '%-29s %s\n' "Navegador:" "$BROWSER_TYPE"
+  printf '%-29s %s\n' "Resolução:" "$GEOMETRY"
+  printf '%-29s %s\n' "Perfil do navegador:" "$PROFILE_DIR (${profile_size:-0B})"
+  printf '%-29s %b\n' "Desktop/VNC:" "$(service_badge "$SERVICE_DESKTOP")"
+  printf '%-29s %b\n' "noVNC:" "$(service_badge "$SERVICE_NOVNC")"
+  printf '%-29s %b\n' "Nginx:" "$(service_badge nginx)"
+  printf '%-29s %b\n' "Porta VNC ${VNC_PORT}:" "$(port_badge "$VNC_PORT")"
+  printf '%-29s %b\n' "Porta noVNC ${NOVNC_PORT}:" "$(port_badge "$NOVNC_PORT")"
+  printf '%-29s %b\n' "Porta HTTPS 443:" "$(port_badge 443)"
+  printf '%-29s %s\n' "Chrome/Chromium:" "$browser_state"
+  printf '%-29s %s\n' "Inicialização automática:" "$auto_start"
+  printf '%-29s %s\n' "Memória usada/total:" "$(free -h | awk '/Mem:/ {print $3 "/" $2 " (disponível " $7 ")"}')"
+  printf '%-29s %s\n' "Swap usada/total:" "$(free -h | awk '/Swap:/ {print $3 "/" $2}')"
+  printf '%-29s %s\n' "Disco livre em /:" "$(df -h / | awk 'NR==2 {print $4 " de " $2}')"
+  printf '%-29s %s\n' "Tempo ligado:" "${uptime_text:-indisponível}"
+  printf '%-29s %s\n' "Firewall da nuvem:" "não verificável pela VPS; confirme TCP 443 no provedor"
+  echo
+  show_health_summary full || true
 }
 
 quick_healthcheck() {
@@ -847,5 +1065,6 @@ quick_healthcheck() {
   wait_port 127.0.0.1 "$VNC_PORT" 1 || failures=$((failures + 1))
   wait_port 127.0.0.1 "$NOVNC_PORT" 1 || failures=$((failures + 1))
   wait_port 0.0.0.0 443 1 || failures=$((failures + 1))
+  wait_for_browser 5 || failures=$((failures + 1))
   return "$failures"
 }
