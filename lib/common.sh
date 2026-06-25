@@ -2,7 +2,7 @@
 # Funções compartilhadas do WhatsApp Remote VPS.
 
 PROJECT_NAME="WhatsApp Remote VPS"
-PROJECT_VERSION="2.5.1"
+PROJECT_VERSION="2.5.2"
 GITHUB_REPOSITORY_DEFAULT="DuiBR/whatsapp-remote-vps"
 GITHUB_REF_DEFAULT="main"
 INSTALL_DIR="/opt/whatsapp-remote"
@@ -642,7 +642,17 @@ touch "$LOG_FILE"
 chown "$APP_USER:$APP_GROUP" "$LOG_FILE"
 chmod 0640 "$LOG_FILE"
 install -d -m 0700 -o "$APP_UID" -g "$APP_GID" "$RUNTIME_DIR"
-install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" "$PROFILE_DIR"
+install -d -m 0700 -o "$APP_USER" -g "$APP_GROUP" \
+  "$PROFILE_DIR" \
+  "$PROFILE_DIR/Crash Reports" \
+  "$APP_HOME/.cache" \
+  "$APP_HOME/.local" \
+  "$APP_HOME/.local/share" \
+  "$APP_HOME/.local/share/applications" \
+  "$APP_HOME/.config/google-chrome" \
+  "$APP_HOME/.config/google-chrome/Crash Reports" \
+  "$APP_HOME/.config/chromium" \
+  "$APP_HOME/.config/chromium/Crash Reports"
 
 chmod 1777 /tmp 2>/dev/null || true
 [[ -d /dev/shm ]] && chmod 1777 /dev/shm 2>/dev/null || true
@@ -669,6 +679,12 @@ done
 
 rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie" 2>/dev/null || true
 chown "$APP_USER:$APP_GROUP" "$PROFILE_DIR" "$LOG_DIR" "$LOG_FILE" 2>/dev/null || true
+chown -R "$APP_USER:$APP_GROUP" \
+  "$PROFILE_DIR/Crash Reports" \
+  "$APP_HOME/.cache" \
+  "$APP_HOME/.local" \
+  "$APP_HOME/.config/google-chrome" \
+  "$APP_HOME/.config/chromium" 2>/dev/null || true
 SCRIPT
   chmod 755 /usr/local/sbin/whatsapp-browser-preflight
 
@@ -683,6 +699,8 @@ export LOGNAME="$APP_USER"
 export DISPLAY=":${DISPLAY_NUMBER}"
 export XDG_RUNTIME_DIR="/run/user/${APP_UID}"
 export XDG_CONFIG_HOME="$APP_HOME/.config"
+export XDG_CACHE_HOME="$APP_HOME/.cache"
+export XDG_DATA_HOME="$APP_HOME/.local/share"
 
 LOG_DIR="/var/log/whatsapp-remote"
 LOG_FILE="$LOG_DIR/browser.log"
@@ -694,8 +712,28 @@ for _ in $(seq 1 120); do
 done
 DISPLAY=":${DISPLAY_NUMBER}" xdpyinfo >/dev/null 2>&1 || { echo "Display :${DISPLAY_NUMBER} indisponível para o navegador."; exit 1; }
 
-install -d -m 700 "$PROFILE_DIR" "$XDG_RUNTIME_DIR"
+install -d -m 700 \
+  "$PROFILE_DIR" \
+  "$PROFILE_DIR/Crash Reports" \
+  "$XDG_RUNTIME_DIR" \
+  "$XDG_CACHE_HOME" \
+  "$XDG_DATA_HOME" \
+  "$XDG_DATA_HOME/applications" \
+  "$XDG_CONFIG_HOME/google-chrome" \
+  "$XDG_CONFIG_HOME/google-chrome/Crash Reports" \
+  "$XDG_CONFIG_HOME/chromium" \
+  "$XDG_CONFIG_HOME/chromium/Crash Reports"
 rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie" 2>/dev/null || true
+
+# O wrapper /usr/bin/google-chrome-stable executa integrações de desktop que não
+# são necessárias numa VPS. O binário real é mais previsível sob systemd e foi
+# o caminho utilizado pelas versões que funcionavam antes do serviço dedicado.
+BROWSER_EXEC="$BROWSER_BIN"
+if [[ "$BROWSER_BIN" == *google-chrome* && -x /opt/google/chrome/chrome ]]; then
+  BROWSER_EXEC="/opt/google/chrome/chrome"
+elif [[ "$BROWSER_BIN" == *google-chrome* && -x /opt/google/chrome/google-chrome ]]; then
+  BROWSER_EXEC="/opt/google/chrome/google-chrome"
+fi
 
 COMMON_FLAGS=(
   --user-data-dir="$PROFILE_DIR"
@@ -708,8 +746,6 @@ COMMON_FLAGS=(
   --disable-extensions
   --disable-sync
   --disable-background-mode
-  --disable-breakpad
-  --disable-crash-reporter
   --noerrdialogs
   --ozone-platform=x11
   --disable-features=Translate,MediaRouter
@@ -742,13 +778,15 @@ run_mode() {
   {
     echo
     echo "===== $(date -Is) | iniciando navegador | sandbox=$mode ====="
-    echo "Binário: $BROWSER_BIN"
-    echo "Perfil:  $PROFILE_DIR"
+    echo "Binário configurado: $BROWSER_BIN"
+    echo "Binário executado:   $BROWSER_EXEC"
+    echo "Perfil:              $PROFILE_DIR"
+    echo "Crashpad DB:          $XDG_CONFIG_HOME/google-chrome/Crash Reports"
   } >> "$LOG_FILE"
 
   start="$(date +%s)"
   set +e
-  dbus-run-session -- "$BROWSER_BIN" "${COMMON_FLAGS[@]}" "${sandbox_flags[@]}" "https://web.whatsapp.com/" \
+  dbus-run-session -- "$BROWSER_EXEC" "${COMMON_FLAGS[@]}" "${sandbox_flags[@]}" "https://web.whatsapp.com/" \
     > >(tee -a "$LOG_FILE") 2>&1
   rc=$?
   set -e
@@ -1223,7 +1261,7 @@ browser_failure_detail() {
   local message result file_message core_message
   result="$(systemctl show "$SERVICE_BROWSER" -p Result --value 2>/dev/null || true)"
   file_message="$(tail -n 80 "$BROWSER_LOG_FILE" 2>/dev/null \
-    | grep -Eai 'FATAL|ERROR|sandbox|zygote|namespace|permission denied|trace/breakpoint|segmentation|core' \
+    | grep -Eai 'FATAL|ERROR|sandbox|zygote|namespace|permission denied|trace/breakpoint|segmentation|core|crashpad|database is required' \
     | tail -n 1 | tr '\n' ' ' | cut -c1-240 || true)"
   message="$(journalctl -u "$SERVICE_BROWSER" -n 35 --no-pager -o cat 2>/dev/null \
     | grep -Ev '^[[:space:]]*$|Scheduled restart job|Stopped |Started ' \
@@ -1440,6 +1478,9 @@ collect_health_issues() {
 
   nginx -t >/dev/null 2>&1 || health_error "A configuração do Nginx contém erro; execute 'nginx -t' para detalhes."
   if ! browser_is_running; then
+    if grep -Fq 'chrome_crashpad_handler: --database is required' "$BROWSER_LOG_FILE" 2>/dev/null; then
+      health_error "Chrome não conseguiu inicializar o banco local do Crashpad. Atualize/repare para recriar os diretórios do usuário e remover flags de crash obsoletas."
+    fi
     health_error "Chrome/Chromium não está em execução ($(browser_failure_detail))."
   else
     local active_sandbox
