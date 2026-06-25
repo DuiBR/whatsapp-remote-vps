@@ -18,7 +18,7 @@ done
 
 sha256sum -c MANIFEST.sha256
 
-grep -q 'PROJECT_VERSION="2.5.0"' lib/common.sh
+grep -q 'PROJECT_VERSION="2.5.1"' lib/common.sh
 grep -q 'new_install_menu' setup.sh
 grep -q 'existing_install_menu' setup.sh
 grep -q 'Reparar/atualizar preservando' setup.sh
@@ -28,6 +28,10 @@ grep -q 'SERVICE_BROWSER="whatsapp-browser.service"' lib/common.sh
 grep -q 'recover_profile_dir' lib/common.sh
 grep -q 'whatsapp_session_status' lib/common.sh
 grep -q 'remote-debugging-address=127.0.0.1' lib/common.sh
+grep -q 'whatsapp-browser-preflight' lib/common.sh
+grep -q 'chmod 4755' lib/common.sh
+grep -q 'dbus-run-session -- "\$BROWSER_BIN"' lib/common.sh
+grep -q 'browser-repair' manage.sh
 grep -q 'whatsapp-status' manage.sh
 grep -q 'show_health_summary compact' manage.sh
 grep -q 'RISCO DE SEGURANÇA' lib/common.sh
